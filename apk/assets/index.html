@@ -275,8 +275,7 @@
 console.log('UI v4 build 1120-u');
 var API = 'http://127.0.0.1:8899';
 var TTS = 'http://127.0.0.1:8899/api/tts';            // 音箱本地合成，不依赖电脑
-var TTS_FALLBACK = '';   // 可选：本地合成失败时的电脑兜底，格式 'http://<电脑IP>:8900/tts'
-                         // 开源版默认留空——不依赖电脑；需要时自己填，或运行时在控制台设置
+var TTS_FALLBACK = '';   // 本地挂了才用电脑兜底
 var DESIGN_W = 1280, DESIGN_H = 800;
 
 /* 两套人设：语音、头像、文案 */
@@ -457,12 +456,10 @@ function splitSpeech(text){
   return out.length ? out : [text];
 }
 
-function speak(text){
-  stopSpeak();
-  text = (text || '').trim();
-  if (!text) return;
-  var seq = speakSeq;
-  var segs = splitSpeech(text);
+// 底层：把若干片段排片并顺序播完（已验证的播放逻辑，原 speak 原封不动）
+function playSegments(segs, seq){
+  text = (segs || []).join('');
+  if (!text.trim()) return;
   var base = TTS;
   var players = [];
   var i = 0;
@@ -474,8 +471,6 @@ function speak(text){
     setWake(true);
   };
 
-  // 播报期间把唤醒压住（不然音箱会听见自己），但必须留一条活路：
-  // 万一音频卡住不出声，这里超时也要把唤醒放回来，否则就成了「喊它不理」。
   var armGuard = function(ms){
     if (wakeGuard) clearTimeout(wakeGuard);
     wakeGuard = setTimeout(function(){
@@ -488,8 +483,6 @@ function speak(text){
     }, ms);
   };
 
-  // 先只发第一句，其余错开 350ms 再发。三个合成请求同时打上去，
-  // 在这颗 4×A35 上会互相抢 CPU/TLS，反倒把第一句拖慢近半秒。
   var timers = [];
   var build = function(){
     var t;
@@ -501,10 +494,10 @@ function speak(text){
       el.preload = 'auto';
       players.push(el);
       if (k === 0){
-        el.src = ttsUrl(base, segs[0]);
+        el.src = ttsUrl(base, segs[k]);
       } else {
-        (function(el2, s, delay){
-          timers.push(setTimeout(function(){ el2.src = ttsUrl(base, s); }, delay));
+        (function(el2, st, delay){
+          timers.push(setTimeout(function(){ el2.src = ttsUrl(base, st); }, delay));
         })(el, segs[k], 350 * k);
       }
     }
@@ -515,10 +508,9 @@ function speak(text){
     if (k >= players.length) { finish(); return; }
     var el = players[k];
     currentAudio = el;
-    armGuard(14000);                           // 等这一句出声的上限
-    var adv = false;                           // 一句只往前走一次，防 ended/error 双触发
+    armGuard(14000);
+    var adv = false;
     el.onplaying = function(){
-      // 已经在放了，就按真实时长重新计时，别让长句被误判成卡死
       var d = el.duration;
       if (isFinite(d) && d > 0) armGuard(d * 1000 + 5000);
     };
@@ -530,13 +522,13 @@ function speak(text){
     el.onerror = function(){
       if (seq !== speakSeq || adv) return;
       adv = true;
-      if (base === TTS && TTS_FALLBACK) {      // 本地不通且有兜底地址时，整段改用电脑重来
+      if (base === TTS && TTS_FALLBACK){
         console.warn('tts 本地失败，改用电脑兜底');
         base = TTS_FALLBACK;
         build();
         step(0);
       } else {
-        console.warn('tts 兜底也失败，跳过这句');
+        console.warn('tts 这句失败，跳过');
         step(k + 1);
       }
     };
@@ -551,6 +543,83 @@ function speak(text){
   build();
   setWake(false);
   step(0);
+}
+
+// 一次性播完整段（点按麦克风、问候语、人设切换等老路径）
+function speak(text){
+  stopSpeak();
+  text = (text || '').trim();
+  if (!text) return;
+  playSegments(splitSpeech(text), speakSeq);
+}
+
+/* ---------- 流式播报：第一句先播，后续句子静默排队 ----------
+   DeepSeek 逐句推过来。设计要点：
+   1) 不能每句都调 speak() —— 那会 stopSpeak() 把上一句掐掉。
+   2) 已经开播的这一批不打断；新句子进来只追加到待播队列。
+   3) 待播队列在前一批播放期间就开始合成（设 src 即触发预取），
+      这样前一句刚停，下一句立刻就能出声。 */
+var speakStream = null;
+
+function streamBegin(q){
+  stopSpeak();
+  speakStream = { q: q || '', seq: speakSeq, parts: [], played: 0,
+                  running: false, finished: false };
+}
+
+function streamPush(sentence, idx){
+  var ss = speakStream;
+  if (!ss || ss.finished || ss.seq !== speakSeq) return;
+  sentence = (sentence || '').trim();
+  if (!sentence) return;
+  ss.parts[idx] = sentence;
+  // 只入队，不在这里起播/打断。统一的 watcher 负责取下一批。
+  ss.pump();
+}
+
+function streamEnd(){
+  var ss = speakStream;
+  if (!ss) return;
+  ss.finished = true;
+  ss.pump();
+}
+
+// 给队列对象装上 pump：唯一一个循环，播完才取下一批，绝不中途打断。
+function streamBegin(q){
+  stopSpeak();
+  var ss = { q: q || '', seq: speakSeq, parts: [], played: 0,
+             running: false, finished: false, watcher: null };
+
+  ss.pump = function(){
+    var self = this;
+    if (this.seq !== speakSeq) return;
+    if (this.running) return;                  // 正在播，新句子只入队
+
+    var rest = [];
+    for (var k = this.played; k < this.parts.length; k++){
+      if (this.parts[k]) rest = rest.concat(splitSpeech(this.parts[k]));
+    }
+    if (!rest.length){
+      if (this.finished) speakStream = null;   // 全播完，释放
+      return;
+    }
+    this.played = this.parts.length;
+    this.running = true;
+    playSegments(rest, this.seq);
+
+    if (!this.watcher){
+      this.watcher = setInterval(function(){
+        if (self.seq !== speakSeq){ clearInterval(self.watcher); return; }
+        if (currentAudio !== null) return;     // 还在播，等下一轮
+        clearInterval(self.watcher);
+        self.watcher = null;
+        self.running = false;
+        self.pump();                           // 播完了，取下一批
+      }, 250);
+    }
+  };
+
+  speakStream = ss;
 }
 
 /* ---------- 主题切换 ---------- */
@@ -624,13 +693,34 @@ var lastQ = '';          /* 已经显示过的问题，避免重复上屏 */
 function onHeard(ev){
   if (!ev || !ev.q) return;
   console.log('[dfy] heard ' + ev.q);
-  stopSpeak();
+  if (!ev.streaming) stopSpeak();
   addRow('me', ev.q);
   chatHist.push({role:'user', content: ev.q});
   lastQ = ev.q;
   setStatus('让我想想…');
   if (pending) pending.remove();
   pending = addTyping();
+}
+
+/* 流式逐句：第一句立刻开播，后续句子排队，文字也逐句贴出来 */
+function onPartial(ev){
+  if (!ev || !ev.text) return;
+  if (!speakStream || speakStream.q !== ev.q) {
+    streamBegin(ev.q);
+    if (pending) { pending.remove(); pending = null; }
+    if (lastQ !== ev.q) {
+      addRow('me', ev.q);
+      chatHist.push({role:'user', content: ev.q});
+      lastQ = ev.q;
+    }
+    if (!window.__streamAiRow) window.__streamAiRow = addRow('ai', '');
+  }
+  setStatus('');
+  if (window.__streamAiRow) {
+    var cur = window.__streamAiRow.textContent || '';
+    window.__streamAiRow.textContent = cur + ev.text;
+  }
+  streamPush(ev.text, ev.idx || 0);
 }
 
 function showTurn(ev){
@@ -643,7 +733,7 @@ function showTurn(ev){
     setTimeout(function(){ setStatus(''); }, 2400);
     return;
   }
-  stopSpeak();
+  if (!ev.streamed) stopSpeak();   // 流式路径的队列还在播，不能打断
   if (ev.q !== lastQ) {
     addRow('me', ev.q);
     chatHist.push({role:'user', content: ev.q});
@@ -652,8 +742,15 @@ function showTurn(ev){
   var ans = ev.answer || '嗯…我没想好';
   chatHist.push({role:'assistant', content: ans});
   var b = addRow('ai', '');
-  speak(ans);
-  typeOut(b, ans, function(){ setStatus(''); });
+  if (ev.streamed) {
+    // 流式路径：句子已经逐句播了，这里只负责收尾
+    window.__streamAiRow = null;
+    streamEnd();
+    typeOut(b, ans, function(){ setStatus(''); });
+  } else {
+    speak(ans);
+    typeOut(b, ans, function(){ setStatus(''); });
+  }
 }
 
 /* 麦克风按钮：一次请求完成录音 + 识别 + 回答 */
@@ -672,7 +769,19 @@ function micTurn(){
       onMode(j);
       return;
     }
-    showTurn(j);
+    // 流式路径：partial 事件已经把句子播上了，这里只补聊天记录。
+    // 老路径（非流式）仍走 showTurn 完整播报。
+    if (j.streamed && speakStream) {
+      if (pending) { pending.remove(); pending = null; }
+      if (!window.__streamAiRow) window.__streamAiRow = addRow('ai', '');
+      window.__streamAiRow.textContent = j.answer || '';
+      chatHist.push({role:'assistant', content: j.answer || ''});
+      window.__streamAiRow = null;
+      streamEnd();
+      setStatus('');
+    } else {
+      showTurn(j);
+    }
   }).catch(function(e){
     idle();
     setStatus('出了点问题：' + e.message);
@@ -742,6 +851,7 @@ function poll(){
       try {
         if (ev.type === 'wake') { onWake(ev); }
         else if (ev.type === 'heard') { onHeard(ev); }
+        else if (ev.type === 'partial') { onPartial(ev); }
         else if (ev.type === 'turn') { showTurn(ev); }
         else if (ev.type === 'toast') { toast(ev.text); }
         else if (ev.type === 'mode') { onMode(ev); }

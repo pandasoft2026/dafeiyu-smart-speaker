@@ -52,3 +52,6 @@ Thumbs.db
 # 临时调试文件
 _chk.js
 *_test.mp3
+
+# PC 端 TTS 缓存
+tts_cache/

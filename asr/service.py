@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-69"
+BUILD = "b1120-70"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -220,8 +220,21 @@ def tts_get(text, voice="", pitch=None, rate=None):
         return data
 
 
+# 开机预合成的固定话术。这些句子每次都一模一样，提前合成好命中缓存，
+# 用户一喊就能出声，不用等那两秒多的网络往返。
+# 键是 (音色, pitch, rate)，值与前端 P[mode].hello / back 保持一致。
+TTS_PHRASES = [
+    ("你好呀，我是大肥鱼～点下面的麦克风，跟我说句话吧！",
+     "zh-CN-XiaoyiNeural", 28, 4),
+    ("大肥鱼回来啦～想我了吗？",
+     "zh-CN-XiaoyiNeural", 28, 4),
+    ("梁圣已上线。有事直说。",
+     "zh-CN-YunyangNeural", -10, -6),
+]
+
+
 def tts_warm():
-    """开机先把 DNS 和好 IP 探一遍，第一句能少等半秒。失败也无所谓。"""
+    """开机预热：探好 IP，并把固定话术合成好塞进缓存。失败也无所谓。"""
     try:
         E = tts_mod()
         s = E._tcp_connect(E.HOST, 443, 4)
@@ -229,6 +242,15 @@ def tts_warm():
         log("tts 预热完成 ip=%s" % E._IP_CACHE["ip"])
     except Exception as e:
         log("tts 预热失败（不影响使用）: %s" % e)
+
+    # 固定话术：一条条合成，别并发 ——  concurrency 在这颗 4×A35 上反而更慢
+    for text, voice, pitch, rate in TTS_PHRASES:
+        try:
+            t0 = time.time()
+            tts_get(text, voice, pitch, rate)
+            log("tts 预合成 %d 字 %.2fs" % (len(text), time.time() - t0))
+        except Exception as e:
+            log("tts 预合成失败（%s）: %s" % (text[:8], e))
 
 
 BL_PATH = "/sys/class/leds/lcd-backlight/brightness"
@@ -1284,15 +1306,123 @@ def ask_deepseek(text, history=None):
     return ans
 
 
-# ---------------- 一轮对话（服务端一气呵成） ----------------
-# 唤醒之后不让前端再发一次 /api/listen 接管麦克风：那条路要三次往返，
-# 任何一次丢包界面就停在「让我想想」，用户看到的就是卡死。
+# ---------------- 流式回答：第一句生成完就推给前端开播 ----------------
+# 为什么必须做这个：实测非流式拿全文要 0.97s，TTS 全文又要 2.28s，
+# 两者串行 = 3.25s，加上 ASR 一共四秒多，用户说完要干等。
+# 流式实测首句 0.68s、全文 0.81s：本身只快 0.3s，但首句一出来就能
+# 立刻送 TTS，后面几句在它播放期间并行合成 —— 省掉的是整段等待。
+#
+# 事件协议（前端 poll 消费）：
+#   {"type":"heard",  "q": ...}                        听到什么（沿用）
+#   {"type":"partial","q":...,"text":...,"idx":0}       逐句，前端立刻播
+#   {"type":"turn",   "q":...,"answer":...,"streamed":1} 收尾（只记聊天，不重播）
+SENT_END = "。！？；!?;\n"
+
+
+def _split_stream_sentence(buf, final=False):
+    """从累积文本里切出完整句子。返回的 (句子列表, 剩余)。"""
+    out = []
+    start = 0
+    for i, ch in enumerate(buf):
+        if ch in SENT_END:
+            seg = buf[start:i + 1].strip()
+            if seg:
+                out.append(seg)
+            start = i + 1
+    rest = buf[start:]
+    if final and rest.strip():
+        out.append(rest.strip())
+    return out, rest
+
+
+def ask_deepseek_stream(text, on_sentence=None, history=None):
+    """流式调用 DeepSeek。每切出一句回调一次，返回 (全文, 首句耗时, 全文耗时)。
+
+    on_sentence(sentence, idx) 里可以立刻推事件让前端开播。
+    失败时回退到非流式 ask_deepseek，保证有答案。
+    """
+    key = load_key()
+    if not key:
+        return "（还没配置接口密钥）", 0.0, 0.0
+    msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"])}]
+    if history:
+        msgs.extend(history[-6:])
+    msgs.append({"role": "user", "content": text})
+    body = json.dumps({"model": "deepseek-chat", "messages": msgs,
+                       "stream": True,
+                       "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
+                       "max_tokens": 200}).encode()
+    req = Request("https://api.deepseek.com/chat/completions", data=body,
+                  headers={"Content-Type": "application/json",
+                           "Authorization": "Bearer " + key})
+    t0 = time.time()
+    buf = ""
+    full = []                 # 另存全文：buf 每切出一句就清空，不能用它当答案
+    first_dt = 0.0
+    idx = 0
+    try:
+        with urlopen(req, timeout=20) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    d = json.loads(payload)
+                    delta = d["choices"][0]["delta"].get("content", "")
+                except Exception:
+                    continue
+                if not delta:
+                    continue
+                buf += delta
+                full.append(delta)
+                sents, buf = _split_stream_sentence(buf)
+                for s in sents:
+                    if first_dt == 0.0:
+                        first_dt = time.time() - t0
+                        log("deepseek 首句 %.2fs" % first_dt)
+                    if on_sentence:
+                        try:
+                            on_sentence(s, idx)
+                        except Exception:
+                            log("partial 回调失败", traceback.format_exc()[-160:])
+                    idx += 1
+        sents, buf = _split_stream_sentence(buf, final=True)
+        for s in sents:
+            if first_dt == 0.0:
+                first_dt = time.time() - t0
+            if on_sentence:
+                try:
+                    on_sentence(s, idx)
+                except Exception:
+                    pass
+            idx += 1
+        ans = "".join(full).strip()
+        dt = time.time() - t0
+        log("deepseek 流式 首句 %.2fs 全文 %.2fs" % (first_dt, dt))
+        return ans, first_dt, dt
+    except Exception as e:
+        log("deepseek 流式失败，回退非流式: %s" % e)
+        t1 = time.time()
+        ans = ask_deepseek(text, history)
+        return ans, time.time() - t1, time.time() - t1
+
+
 def answer_question(q, notify=True):
     # 先把「听到了什么」推回去，等大模型的那几秒界面不至于干等着
     if notify:
-        push_event({"type": "heard", "q": q})
-    ans = ask_deepseek(q)
-    ev = {"type": "turn", "q": q, "answer": ans, "mode": STATE["mode"]}
+        push_event({"type": "heard", "q": q, "streaming": 1})
+
+    def emit(sentence, idx):
+        if notify:
+            push_event({"type": "partial", "q": q, "text": sentence,
+                        "idx": idx, "mode": STATE["mode"]})
+
+    ans, first_dt, total_dt = ask_deepseek_stream(q, emit)
+    ev = {"type": "turn", "q": q, "answer": ans, "mode": STATE["mode"],
+          "streamed": 1}
     if notify:
         push_event(ev)
     return ev
@@ -1615,7 +1745,9 @@ class H(BaseHTTPRequestHandler):
             if p.startswith("/api/turn"):
                 if STATE["busy"]:
                     return self._send({"err": "busy", "note": "正在处理上一轮"})
-                ev = do_turn(notify=False, max_sec=float(body.get("seconds", 6)))
+                # 改为 notify=True：逐句 partial 事件推给前端，第一句就能开播。
+                # HTTP 响应仍带回完整结果，老版本前端照常工作。
+                ev = do_turn(notify=True, max_sec=float(body.get("seconds", 6)))
                 return self._send(ev)
 
             if p.startswith("/api/listen"):

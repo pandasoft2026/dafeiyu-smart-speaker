@@ -287,80 +287,140 @@ def _ssml(text, voice, pitch, rate):
     )
 
 
-def synth(text, voice="zh-CN-XiaoyiNeural", pitch=0, rate=0,
-          timeout=20, insecure=False):
-    """把一段文字合成 mp3 字节流。失败抛 TTSError / OSError / ssl.SSLError。"""
-    text = (text or "").strip()
-    if not text:
-        return b""
+def _synth_on(sock, text, voice, pitch, rate, timeout):
+    """在一个已握手的 socket 上合成一句。失败抛异常，socket 由调用方处置。"""
+    sock.settimeout(timeout)
+    cfg = ("X-Timestamp:%s\r\n"
+           "Content-Type:application/json; charset=utf-8\r\n"
+           "Path:speech.config\r\n\r\n"
+           '{"context":{"synthesis":{"audio":{"metadataoptions":'
+           '{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},'
+           '"outputFormat":"%s"}}}}\r\n' % (_js_date(), OUTPUT_FORMAT))
+    _send_text(sock, cfg)
 
-    sock = _connect(timeout=timeout, insecure=insecure)
+    # X-Timestamp 后面这个 "Z" 是微软自己的 bug，照抄才能过。
+    ssml = ("X-RequestId:%s\r\n"
+            "Content-Type:application/ssml+xml\r\n"
+            "X-Timestamp:%sZ\r\n"
+            "Path:ssml\r\n\r\n"
+            "%s" % (uuid.uuid4().hex, _js_date(), _ssml(text, voice, pitch, rate)))
+    _send_text(sock, ssml)
+
     audio = []
-    try:
-        sock.settimeout(timeout)
+    pending = {}
+    while True:
+        opcode, data, fin = _read_frame(sock)
 
-        # 1) 配置：要 mp3，不要句/词边界时间戳（那些是给字幕用的，白占带宽）
-        cfg = ("X-Timestamp:%s\r\n"
-               "Content-Type:application/json; charset=utf-8\r\n"
-               "Path:speech.config\r\n\r\n"
-               '{"context":{"synthesis":{"audio":{"metadataoptions":'
-               '{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},'
-               '"outputFormat":"%s"}}}}\r\n' % (_js_date(), OUTPUT_FORMAT))
-        _send_text(sock, cfg)
+        if opcode == 0x8:                                      # close
+            break
+        if opcode == 0x9 or opcode == 0xA:                     # ping / pong
+            continue
 
-        # 2) 正文。X-Timestamp 后面这个 "Z" 是微软自己的 bug，照抄才能过。
-        ssml = ("X-RequestId:%s\r\n"
-                "Content-Type:application/ssml+xml\r\n"
-                "X-Timestamp:%sZ\r\n"
-                "Path:ssml\r\n\r\n"
-                "%s" % (uuid.uuid4().hex, _js_date(), _ssml(text, voice, pitch, rate)))
-        _send_text(sock, ssml)
+        if opcode == 0x0 and pending:                          # 续帧
+            pending["data"] += data
+            if not fin:
+                continue
+            data = pending["data"]
+            opcode = pending["op"]
+            pending = {}
+        elif not fin:
+            pending = {"op": opcode, "data": data}
+            continue
 
-        # 3) 收帧
-        pending = {}
-        while True:
-            opcode, data, fin = _read_frame(sock)
-
-            if opcode == 0x8:                                  # close
+        if opcode == 0x1:                                      # 文本
+            if "Path:turn.end" in data.decode("utf-8", "replace"):
                 break
-            if opcode == 0x9:                                  # ping -> pong
-                continue
-            if opcode == 0xA:                                  # pong
-                continue
+            continue
 
-            if opcode == 0x0 and pending:                      # 续帧
-                pending["data"] += data
-                if not fin:
-                    continue
-                data = pending["data"]
-                opcode = pending["op"]
-                pending = {}
-            elif not fin:
-                pending = {"op": opcode, "data": data}
+        if opcode == 0x2:                                      # 二进制 = 音频
+            if len(data) < 2:
                 continue
-
-            if opcode == 0x1:                                  # 文本
-                txt = data.decode("utf-8", "replace")
-                if "Path:turn.end" in txt:
-                    break
-                continue
-
-            if opcode == 0x2:                                  # 二进制 = 音频
-                if len(data) < 2:
-                    continue
-                hlen = struct.unpack(">H", data[:2])[0]
-                head = data[2:2 + hlen].decode("latin-1", "replace")
-                if "Path:audio" in head:
-                    audio.append(data[2 + hlen:])
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+            hlen = struct.unpack(">H", data[:2])[0]
+            head = data[2:2 + hlen].decode("latin-1", "replace")
+            if "Path:audio" in head:
+                audio.append(data[2 + hlen:])
 
     out = b"".join(audio)
     if not out:
         raise TTSError("没收到音频（可能被限流或参数不对）")
+    return out
+
+
+# ---- 连接复用池 -----------------------------------------------------------
+# 实测同一条 WebSocket 连上后能连续合成多句：第一句 1.14s（含握手），
+# 第二、三句只要 0.6~0.9s。长回复分句播时能省下每句的握手时间。
+# 池里只放一条，串行使用（服务本身就是一句一句播）；任何异常直接丢弃。
+_pool = []
+_pool_lock = threading.Lock()
+_POOL_TTL = 240.0            # 连接放太久微软会自己断，4 分钟后强制重建
+_pool = []                   # 元素: (sock, 放入时间)
+
+
+def _pool_get(timeout, insecure):
+    with _pool_lock:
+        while _pool:
+            sock, at = _pool.pop()
+            if time.time() - at < _POOL_TTL:
+                return sock
+            try:
+                sock.close()
+            except Exception:
+                pass
+    return None
+
+
+def _pool_put(sock):
+    with _pool_lock:
+        if len(_pool) >= 2:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            return
+        _pool.append((sock, time.time()))
+
+
+def _pool_drop(sock):
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+def synth(text, voice="zh-CN-XiaoyiNeural", pitch=0, rate=0,
+          timeout=20, insecure=False, reuse=True):
+    """把一段文字合成 mp3 字节流。失败抛 TTSError / OSError / ssl.SSLError。
+
+    reuse=True 时尝试复用空闲 WebSocket；复用失败自动新建，调用方无感。
+    """
+    text = (text or "").strip()
+    if not text:
+        return b""
+
+    sock = _pool_get(timeout, insecure) if reuse else None
+    fresh = sock is None
+    if fresh:
+        sock = _connect(timeout=min(timeout, _CONNECT_TIMEOUT), insecure=insecure)
+
+    try:
+        out = _synth_on(sock, text, voice, pitch, rate, timeout)
+    except Exception:
+        _pool_drop(sock)                     # 这条连接可能坏了，别再放回池里
+        if fresh:
+            raise
+        # 复用的连接失败：新建一条重试一次，保证功能不退化
+        sock = _connect(timeout=min(timeout, _CONNECT_TIMEOUT), insecure=insecure)
+        fresh = True
+        try:
+            out = _synth_on(sock, text, voice, pitch, rate, timeout)
+        except Exception:
+            _pool_drop(sock)
+            raise
+
+    if reuse:
+        _pool_put(sock)
+    else:
+        _pool_drop(sock)
     return out
 
 
