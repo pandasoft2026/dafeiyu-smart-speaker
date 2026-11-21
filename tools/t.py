@@ -1,0 +1,1 @@
+import ctypes; ctypes.CDLL("/data/data/com.termux/files/usr/lib/libatomic.so.1",mode=ctypes.RTLD_GLOBAL); print("ATOMIC_OK")

@@ -1,0 +1,54 @@
+# 密钥与凭据 —— 绝对不能进版本库
+api_key.conf
+deepseek_key.txt
+*.keystore
+*.jks
+*.pem
+*.key
+*_key.txt
+
+# 编译产物
+*.class
+*.dex
+*.apk
+*.aar
+*.so
+*.o
+build/
+gen/
+*.apk.idsig
+
+# 第三方二进制（体积大且有各自许可证，自行下载）
+sdk_dl/
+tools/apk/
+tools/platform-tools/
+tools/platform-tools.zip
+tools/libs/
+asr/libvosk_*.so
+asr/vosk-android.aar
+asr/model/
+
+# 运行时录音、缓存、日志
+*.wav
+*.mp3
+*.log
+*.tmp
+/dev/
+dfy_tts/
+
+# 设备原始固件与备份（版权不属于本项目）
+backup_speaker/
+
+# 本地环境与编辑器
+.workbuddy/
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+
+# 临时调试文件
+_chk.js
+*_test.mp3
