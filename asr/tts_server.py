@@ -160,6 +160,16 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
+    # 只留一个实例。之前出现过双击两次 bat 留下两个进程，
+    # 一个占着端口、另一个空转，排查时很容易被 health 骗过去。
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
+    except OSError as e:
+        print("端口 %d 已被占用（%s）。服务可能已经在跑了，不用再开。" % (PORT, e))
+        print("如果不确定，检查：netstat -ano | findstr :%d" % PORT)
+        raise SystemExit(0)
     log("TTS on 0.0.0.0:%d" % PORT)
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        log("TTS 已停止")
