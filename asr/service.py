@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-71"
+BUILD = "b1120-72"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -425,7 +425,13 @@ def record_raw(seconds):
     return pcm, 4
 
 
-def _record_once(max_sec, min_sec, silence, thresh):
+def _record_once(max_sec, min_sec, silence, thresh, min_after_voice=None):
+    """录音到说完自动停。
+
+    min_sec 是「从开始录音算至少要录多久」，唤醒后原来给 2.2s —— 为了等人想问题。
+    但这会导致用户张口就说时也要干等满 2.2s。min_after_voice 是「从第一个字算起
+    至少录多久」：一旦真的开始说话，就用这个更短的门槛，不再被 min_sec 拖住。
+    """
     if os.path.exists(REC):
         try:
             os.remove(REC)
@@ -437,6 +443,7 @@ def _record_once(max_sec, min_sec, silence, thresh):
     t0 = time.time()
     seen = 0
     started = False
+    voice_t0 = None                    # 第一个字出现的时刻
     last_voice = t0
     first_seen = False
     while time.time() - t0 < max_sec:
@@ -468,10 +475,20 @@ def _record_once(max_sec, min_sec, silence, thresh):
         pk = max((abs(v) for v in arr[0::4]), default=0)
         now = time.time()
         if pk > thresh:
+            if not started:
+                voice_t0 = now
             started = True
             last_voice = now
-        elif started and (now - last_voice) > silence and (now - t0) > min_sec:
-            break
+        elif started:
+            # 静音够长；最短时长分两套：从开录算 or 从第一个字算
+            quiet_enough = (now - last_voice) > silence
+            if min_after_voice is None:
+                long_enough = (now - t0) > min_sec
+            else:
+                long_enough = ((now - voice_t0) > min_after_voice
+                               or (now - t0) > min_sec)   # 兜底：始终不超过原上限
+            if quiet_enough and long_enough:
+                break
     try:
         proc.kill()
         proc.wait(timeout=2)
@@ -497,10 +514,11 @@ def _record_once(max_sec, min_sec, silence, thresh):
 SILENCE_DEFAULT = 0.45
 
 
-def record(max_sec=6.0, min_sec=1.0, silence=SILENCE_DEFAULT, thresh=700):
+def record(max_sec=6.0, min_sec=1.0, silence=SILENCE_DEFAULT, thresh=700,
+           min_after_voice=None):
     """说完自动停；抢不到麦克风时自动重试一次"""
     for i in range(2):
-        pcm, nch = _record_once(max_sec, min_sec, silence, thresh)
+        pcm, nch = _record_once(max_sec, min_sec, silence, thresh, min_after_voice)
         if pcm:
             return pcm, nch
         log("record 第 %d 次没拿到音频" % (i + 1))
@@ -1302,8 +1320,13 @@ def wake_loop():
                 # 等提示音「叮」播完再开录（前端收到事件后立刻响），
                 # 顺便等 tinycap 把麦克风彻底放开
                 time.sleep(0.55)
-                # 至少录 2.2 秒：给用户留出「喊完名字再想问题」的停顿
-                do_turn(max_sec=7.0, min_sec=2.2, silence=0.9, from_wake=True)
+                # 唤醒后只喊了名字这一路：
+                #   min_sec=2.2 保留作为「一直不说话」时的最长耐心；
+                #   但一旦开始说话，min_after_voice=0.5 就让判停立刻生效，
+                #   不再让用户说完还要干等满 2.2s。silence 与按钮路径一致用 0.45
+                #   （回放验证过 0.45 不误切 500ms 句中停顿）。
+                do_turn(max_sec=7.0, min_sec=2.2, silence=SILENCE_DEFAULT,
+                        from_wake=True, min_after_voice=0.5)
         except Exception:
             log("wake err", traceback.format_exc()[-300:])
             STATE["busy"] = False
@@ -1471,7 +1494,7 @@ def answer_question(q, notify=True):
 
 
 def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
-            silence=SILENCE_DEFAULT, from_wake=False):
+            silence=SILENCE_DEFAULT, from_wake=False, min_after_voice=None):
     """录音 -> 离线识别 -> DeepSeek，一个函数走完
 
     唤醒后这条路径要放宽 min_sec/silence：人喊完唤醒词通常会顿一下，
@@ -1482,7 +1505,8 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
     rec_t0 = time.time()
     try:
         with _lock:
-            raw, nch = record(max_sec, min_sec=min_sec, silence=silence)
+            raw, nch = record(max_sec, min_sec=min_sec, silence=silence,
+                              min_after_voice=min_after_voice)
         rec_dt = time.time() - rec_t0
         if raw is None:
             log("turn: record failed")
