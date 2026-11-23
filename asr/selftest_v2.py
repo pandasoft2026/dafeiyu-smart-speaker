@@ -109,7 +109,7 @@ check("TTS 不产生事件", len(after.get("events", [])) == 0,
 
 # 6 人设切换往返
 print("[6] 人设切换")
-orig = req("/health").get("mode")
+orig = "fish"   # 总是回到默认人设，保证测试幂等
 for m in ("sage", "fish", "sage", "fish"):
     r = req("/api/mode", "POST", {"mode": m})
     check("切到 %s" % m, r.get("mode") == m)
