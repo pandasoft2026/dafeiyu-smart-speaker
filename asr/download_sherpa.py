@@ -5,9 +5,9 @@ import time
 import urllib.request
 
 URL = ("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/"
-       "download/v2.0.1/sherpa-onnx-v2.0.1-android-armeabi-v7a-termux-shared.tar.bz2")
-OUT = "/data/local/tmp/sherpa_v7.tar.bz2"
-TOTAL = 16141190
+       "download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2")
+OUT = "/data/local/tmp/sherpa_model.tar.bz2"
+TOTAL = 40 * 1024 * 1024
 STEP = 1024 * 1024          # 每次请求 1MB，小片更不容易断
 
 
