@@ -48,7 +48,7 @@ print("=" * 56)
 # 1 健康
 print("[1] 健康检查")
 h = req("/health")
-check("build", h.get("build") == "b1120-70", str(h.get("build")))
+check("build", str(h.get("build", "")).startswith("b1120"), str(h.get("build")))
 check("asr", h.get("asr") is True)
 check("wake", h.get("wake") is True)
 check("tts stats", isinstance(h.get("tts"), dict), str(h.get("tts")))
@@ -80,7 +80,7 @@ except urllib.error.HTTPError as e:
     code = e.code
 check("非法音色返回错误而非崩溃", code >= 400, "code=%d" % code)
 h2 = req("/health")
-check("服务仍健康", h2.get("build") == "b1120-70")
+check("服务仍健康", h2.get("build") == h.get("build"))
 
 # 4 参数边界
 print("[4] 参数解析")
@@ -128,7 +128,8 @@ for text, want in [
 
 # 8 缓存命中
 print("[8] 缓存")
-u = tts_url("缓存命中自测乙")
+import random
+u = tts_url("缓存命中自测%d" % random.randint(10000, 99999))
 t0 = time.time(); a = req(u, raw=True); dt1 = time.time() - t0
 t0 = time.time(); b = req(u, raw=True); dt2 = time.time() - t0
 check("内容一致", a == b, "%d/%d bytes" % (len(a), len(b)))

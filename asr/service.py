@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-70"
+BUILD = "b1120-71"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -251,6 +251,38 @@ def tts_warm():
             log("tts 预合成 %d 字 %.2fs" % (len(text), time.time() - t0))
         except Exception as e:
             log("tts 预合成失败（%s）: %s" % (text[:8], e))
+
+
+def tts_wake_prewarm():
+    """方案D：唤醒瞬间预热。异步跑，绝不挡住唤醒/录音链路。
+
+    只做一件无声的事：确保复用池里有一条已握手的 WebSocket。
+    用户听完叮才开始想问题，这几秒足够预热完成，回答时直接拿现成连接。
+
+    为什么不出声播「我在」：本机已经有 ding() 提示音，用户听到就知道开口。
+    再叠一句 TTS 反而会盖住开头几个字，把半双工体验搞坏。
+    """
+    try:
+        E = tts_mod()
+        # 必须直接碰连接池：tts_get 命中缓存时根本不会建连，预热就白做了。
+        # 拿一条连接发极短音再放回；池空就新建。
+        t0 = time.time()
+        s = E._pool_get(4, False)
+        if s is None:
+            s = E._connect(timeout=E._CONNECT_TIMEOUT)
+        try:
+            E._synth_on(s, "嗯", "zh-CN-XiaoyiNeural",
+                        TTS_TUNE["fish"][0], TTS_TUNE["fish"][1], 8)
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+            s = E._connect(timeout=E._CONNECT_TIMEOUT)
+        E._pool_put(s)
+        log("tts 唤醒预热 %.2fs ip=%s" % (time.time() - t0, E._IP_CACHE["ip"]))
+    except Exception as e:
+        log("tts 唤醒预热失败（不影响）: %s" % e)
 
 
 BL_PATH = "/sys/class/leds/lcd-backlight/brightness"
@@ -457,7 +489,15 @@ def _record_once(max_sec, min_sec, silence, thresh):
     return pcm, 4
 
 
-def record(max_sec=6.0, min_sec=1.0, silence=0.62, thresh=700):
+# 静音判停：0.62 太保守，用户说完要白等半秒多才开播。
+# 2026-11-22 用真人录音插入 300/400/500ms 句中停顿做回放验证：
+#   0.62 / 0.45 都不误切；0.35 在 500ms 停顿处误切（早 2.64s）。
+# 所以取 0.45 —— 安全且仍省 0.17s。
+# 唤醒后那条路径单独放宽到 0.9（人喊完唤醒词会顿一下），不在这里改。
+SILENCE_DEFAULT = 0.45
+
+
+def record(max_sec=6.0, min_sec=1.0, silence=SILENCE_DEFAULT, thresh=700):
     """说完自动停；抢不到麦克风时自动重试一次"""
     for i in range(2):
         pcm, nch = _record_once(max_sec, min_sec, silence, thresh)
@@ -739,6 +779,8 @@ def _clean_tail(t):
 
 
 def _push_wake(q):
+    # 方案D：唤醒即预热 TTS 连接，异步，不挡住后续录音
+    threading.Thread(target=tts_wake_prewarm, daemon=True).start()
     # 一口气把「肥鱼肥鱼，今天天气怎样」说完时，q 里已经带了问题，事件直接带上
     if len(q) >= 4:
         push_event({"type": "wake", "q": q})
@@ -1428,7 +1470,8 @@ def answer_question(q, notify=True):
     return ev
 
 
-def do_turn(notify=True, max_sec=6.0, min_sec=1.0, silence=0.62, from_wake=False):
+def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
+            silence=SILENCE_DEFAULT, from_wake=False):
     """录音 -> 离线识别 -> DeepSeek，一个函数走完
 
     唤醒后这条路径要放宽 min_sec/silence：人喊完唤醒词通常会顿一下，
@@ -1436,9 +1479,11 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0, silence=0.62, from_wake=False
     """
     STATE["busy"] = True
     touch_activity()
+    rec_t0 = time.time()
     try:
         with _lock:
             raw, nch = record(max_sec, min_sec=min_sec, silence=silence)
+        rec_dt = time.time() - rec_t0
         if raw is None:
             log("turn: record failed")
             ev = {"type": "turn", "q": "", "answer": "", "err": "record failed"}
@@ -1446,6 +1491,8 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0, silence=0.62, from_wake=False
                 push_event(ev)
             return ev
         pcm, peak = finish(raw, nch)
+        log("turn 录音 %.2fs silence=%.2f peak=%d"
+            % (rec_dt, silence, peak))
         txt = ""
         if peak >= 700:          # 实测底噪峰值 ~450，太低就是没人说话
             txt, dt, conf = asr_decode(pcm)
