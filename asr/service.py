@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-74"
+BUILD = "b1120-76"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -303,6 +303,26 @@ def android_env():
     if _CLEAN_ENV is None:
         _CLEAN_ENV = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
     return _CLEAN_ENV
+
+
+def apply_brightness():
+    """开机把亮度压到护眼档：开自动亮度 + 基准调暗。
+
+    这台机原厂背光默认拉满 255，小屏在室内刺眼。设备有光线传感器，
+    所以开自动亮度让环境光自己调，再用 adj=-0.5 把整体基准压暗。
+    settings 是系统设置，重启服务后仍会保留（除非恢复出厂）。
+    """
+    cmds = ("settings put system screen_brightness_mode 1",
+            "settings put system screen_auto_brightness_adj -0.5",
+            "settings put system screen_brightness 60")
+    for c in cmds:
+        try:
+            subprocess.Popen(["/system/bin/sh", "-c", c],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env=android_env())
+        except Exception:
+            pass
+    log("亮度：自动模式 + 基准 -0.5")
 
 
 def screen_on():
@@ -807,48 +827,61 @@ def _push_wake(q):
     return ("wake", "")
 
 
+# 严格唤醒白名单（2026-11-24）：
+# 实测限定词表会把噪音里凑巧的字序列拼成「你大肥鱼」并误命中，随后把周围人
+# 说话（「到后面你的意思是…」）当问题发给大模型。用户明确要求：只有喊
+# 「肥鱼肥鱼」「你好梁圣」这种完整唤醒语才拾音。所以对话唤醒只认下面这些
+# 明确形式；裸名字、近音碎字一律不算。切人设（召唤/切换）单独走，不拾音。
+_STRICT_WAKE = (
+    "肥鱼肥鱼", "肥鱼肥余", "费鱼肥鱼",
+    "你好肥鱼", "您好肥鱼", "你好大肥鱼", "您好大肥鱼",
+    "你好梁圣", "您好梁圣", "梁圣梁圣", "良圣良圣",
+)
+
+
+def _strict_wake_hit(t):
+    """返回 (是否严格命中, 名字结束下标, 'fish'|'sage')；没命中返回 (False,-1,None)。"""
+    best_end, best_who = -1, None
+    for w in _STRICT_WAKE:
+        i = t.find(w)
+        if i < 0:
+            continue
+        who = "sage" if ("圣" in w or "良" in w) else "fish"
+        if i + len(w) > best_end:
+            best_end, best_who = i + len(w), who
+    return (best_end >= 0), best_end, best_who
+
+
 def handle_wake_text(t):
     """命中返回 ("wake", 问题) / ("mode", 模式)；没命中返回 False"""
     t2 = t.replace(" ", "")
     if not t2:
         return False
-    end, who = _find_name(t2)
-    if end < 0 and len(t2) <= 12:
-        # 短句才放宽到近音匹配，长句里出现同音字对多半是正常内容
-        end, who = _find_fuzzy_name(t2)
-    if end < 0:
+
+    # 切人设：单独判定，且只在明确的「召唤/切换 + 名字」时才切，不拾音。
+    if any(w in t2 for w in SWITCH_WORDS):
+        hf, hs = _has_fish(t2), _has_sage(t2)
+        if hf or hs:
+            end, who = _find_name(t2)
+            if end < 0 and len(t2) <= 12:
+                end, who = _find_fuzzy_name(t2)
+            if who or hf or hs:
+                set_mode("sage" if (hs and not hf) else "fish")
+                return ("mode", STATE["mode"])
         return False
-    hf, hs = _has_fish(t2) or who == "fish", _has_sage(t2) or who == "sage"
-    # 只取唤醒词之后的内容当问题
+
+    # 对话唤醒：必须严格白名单命中
+    hit, end, who = _strict_wake_hit(t2)
+    if not hit:
+        return False
+    # 只取严格唤醒语之后的内容当问题
     q = _clean_tail(t2[end:])
 
-    # 1) 明确说要切换
-    if any(w in t2 for w in SWITCH_WORDS):
-        if hs and not hf:
-            set_mode("sage")
-            return ("mode", "sage")
-        if hf and not hs:
-            set_mode("fish")
-            return ("mode", "fish")
-        if hs:
-            set_mode("sage")
-            return ("mode", "sage")
+    # 严格命中即唤醒拾音。若喊的是另一人设且没带问题，顺便切过去（不额外播报）。
+    if who == "sage" and STATE["mode"] != "sage" and not q:
+        set_mode("sage")
+    elif who == "fish" and STATE["mode"] != "fish" and not q:
         set_mode("fish")
-        return ("mode", "fish")
-
-    # 2) 只喊了名字：当前不是这个人设就切过去，已经是就唤醒
-    if hs and not hf:
-        if STATE["mode"] != "sage" and not q:
-            set_mode("sage")
-            return ("mode", "sage")
-        return _push_wake(q)
-    if hf and not hs:
-        if STATE["mode"] != "fish" and not q:
-            set_mode("fish")
-            return ("mode", "fish")
-        return _push_wake(q)
-
-    # 3) 两个名字都出现，按唤醒处理
     return _push_wake(q)
 
 
@@ -1971,6 +2004,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     init_asr()
+    apply_brightness()
     threading.Thread(target=wake_loop, daemon=True).start()
     threading.Thread(target=idle_watch, daemon=True).start()
     threading.Thread(target=wake_watch, daemon=True).start()
