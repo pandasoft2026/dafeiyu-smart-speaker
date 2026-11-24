@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-72"
+BUILD = "b1120-74"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -1334,6 +1334,85 @@ def wake_loop():
 
 
 # ---------------- DeepSeek ----------------
+# token 用量与余额统计（右下角状态面板用）
+# 进程重启归零；余额带缓存，避免每次请求都去查 DeepSeek。
+USAGE_FILE = os.path.join(BASE, "usage.json")
+USAGE = {"calls": 0, "prompt": 0, "completion": 0, "total": 0,
+         "errors": 0, "last_at": 0.0, "started_at": time.time()}
+BALANCE = {"value": None, "currency": "CNY", "at": 0.0, "err": ""}
+BALANCE_TTL = 300.0          # 余额缓存 5 分钟
+LLM_MODEL = "deepseek-chat"
+
+
+def _load_usage():
+    """从文件恢复累计用量——服务一天会被看门狗拉起几次，不能每次归零。"""
+    try:
+        with open(USAGE_FILE) as f:
+            d = json.load(f)
+        for k in ("calls", "prompt", "completion", "total", "errors"):
+            USAGE[k] = int(d.get(k) or 0)
+        if d.get("started_at"):
+            USAGE["started_at"] = float(d["started_at"])
+    except Exception:
+        pass
+
+
+def _save_usage():
+    try:
+        with open(USAGE_FILE, "w") as f:
+            json.dump({k: USAGE[k] for k in
+                       ("calls", "prompt", "completion", "total", "errors", "started_at")},
+                      f)
+    except Exception:
+        pass
+
+
+_load_usage()
+
+
+def _record_usage(usage):
+    """把一次 API 返回的 usage 累加进全局计数，并落盘。"""
+    if not isinstance(usage, dict):
+        return
+    try:
+        USAGE["calls"] += 1
+        USAGE["prompt"] += int(usage.get("prompt_tokens") or 0)
+        USAGE["completion"] += int(usage.get("completion_tokens") or 0)
+        USAGE["total"] += int(usage.get("total_tokens") or 0)
+        USAGE["last_at"] = time.time()
+        _save_usage()
+    except Exception:
+        pass
+
+
+def get_balance(force=False):
+    """查 DeepSeek 账户余额。失败返回上次成功值或 None，绝不影响对话。"""
+    now = time.time()
+    if not force and BALANCE["value"] is not None and now - BALANCE["at"] < BALANCE_TTL:
+        return dict(BALANCE)
+    key = load_key()
+    if not key:
+        BALANCE["err"] = "未配置密钥"
+        return dict(BALANCE)
+    try:
+        req = Request("https://api.deepseek.com/user/balance",
+                      headers={"Authorization": "Bearer " + key})
+        with urlopen(req, timeout=8) as r:
+            d = json.loads(r.read().decode())
+        # 返回形如 {"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"12.34"}]}
+        infos = d.get("balance_infos") or []
+        if infos:
+            BALANCE["value"] = infos[0].get("total_balance")
+            BALANCE["currency"] = infos[0].get("currency", "CNY")
+        BALANCE["err"] = ""
+        BALANCE["at"] = now
+    except Exception as e:
+        BALANCE["err"] = type(e).__name__
+        if not BALANCE["at"]:
+            BALANCE["at"] = now       # 失败也设个时间，避免每次都重试拖慢
+    return dict(BALANCE)
+
+
 def load_key():
     try:
         with open(API_KEY_FILE) as f:
@@ -1350,7 +1429,7 @@ def ask_deepseek(text, history=None):
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
-    body = json.dumps({"model": "deepseek-chat", "messages": msgs,
+    body = json.dumps({"model": LLM_MODEL, "messages": msgs,
                        "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
                        "max_tokens": 200}).encode()
     req = Request("https://api.deepseek.com/chat/completions", data=body,
@@ -1362,6 +1441,7 @@ def ask_deepseek(text, history=None):
         # 断网或信号差的时候用户要干等半分钟，看着就像死机。
         with urlopen(req, timeout=20) as r:
             d = json.loads(r.read().decode())
+        _record_usage(d.get("usage"))
         ans = d["choices"][0]["message"]["content"].strip()
     except URLError as e:
         ans = "网络好像不太通呢，%s" % e
@@ -1413,8 +1493,9 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
-    body = json.dumps({"model": "deepseek-chat", "messages": msgs,
+    body = json.dumps({"model": LLM_MODEL, "messages": msgs,
                        "stream": True,
+                       "stream_options": {"include_usage": True},
                        "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
                        "max_tokens": 200}).encode()
     req = Request("https://api.deepseek.com/chat/completions", data=body,
@@ -1436,6 +1517,12 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
                     break
                 try:
                     d = json.loads(payload)
+                except Exception:
+                    continue
+                # usage 在最后一个 chunk 里给，那个 chunk 的 choices 是空的
+                if d.get("usage"):
+                    _record_usage(d["usage"])
+                try:
                     delta = d["choices"][0]["delta"].get("content", "")
                 except Exception:
                     continue
@@ -1667,6 +1754,17 @@ class H(BaseHTTPRequestHandler):
             return self._send({"ok": True, "asr": bool(_asr), "mode": STATE["mode"],
                                "wake": STATE["wake"], "busy": STATE["busy"],
                                "build": BUILD, "tts": dict(_tts_stat)})
+        if self.path.startswith("/api/stats"):
+            # 右下角状态面板：token 用量 + 余额 + 当前模型。
+            # 余额查询有 5 分钟缓存；force=1 可强制刷新。
+            force = "force=1" in self.path
+            bal = get_balance(force=force)
+            up = dict(USAGE)
+            up["uptime"] = round(time.time() - USAGE["started_at"], 0)
+            # 不估算费用：DeepSeek 按时段/模型调价，估算数字只会误导。
+            # 真实余额走 /user/balance，那个才准。
+            return self._send({"usage": up, "balance": bal, "model": LLM_MODEL,
+                               "build": BUILD})
         if self.path.startswith("/api/idle"):
             # 自测用：看息屏倒计时还剩多久
             return self._send({"idle_off": IDLE_OFF,
