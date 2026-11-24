@@ -79,25 +79,26 @@
 
   /* 用量面板：麦克风这一排的横长条，所有信息一次显示完，不收起。 */
   .usage {
-    position:absolute; right:14px; top:50%; transform:translateY(-50%);
+    position:absolute; right:14px; top:50%; transform:translateY(-50%); width:238px;
     z-index:12; font-family:inherit; user-select:none; -webkit-user-select:none;
   }
   .usage .ubody {
-    display:flex; align-items:center; gap:8px;
-    padding:6px 10px; white-space:nowrap;
+    display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+    width:100%; box-sizing:border-box; padding:7px 11px; white-space:nowrap;
     border-radius:12px; background:rgba(255,255,255,.88);
     border:1px solid rgba(46,155,240,.18); box-shadow:0 3px 10px rgba(46,155,240,.10);
     font-size:13px; font-weight:800; color:#365F7D;
   }
+  .usage .line { display:flex; align-items:center; gap:7px; }
   .usage .item { display:flex; align-items:baseline; gap:3px; }
   .usage .k { color:#8FB4CE; font-size:12px; }
   .usage .v { color:#1F567E; font-variant-numeric:tabular-nums; }
+  .usage .v.star { color:#D08A2A; }
   .usage .udot { width:6px; height:6px; border-radius:50%; background:#57C98A; flex:0 0 6px; }
   .usage .udot.off { background:#D6A44A; }
-  .usage .sep { width:1px; height:13px; background:rgba(46,155,240,.16); }
   .usage .refresh {
     cursor:pointer; color:#2E8FE8; font-size:12px; font-weight:800;
-    padding:1px 4px; border-radius:6px; background:rgba(46,155,240,.08);
+    padding:1px 5px; border-radius:6px; background:rgba(46,155,240,.08);
   }
 
   .row { display:flex; gap:11px; align-items:flex-start; flex:0 0 auto; min-height:0;
@@ -280,16 +281,20 @@
       <div class="status" id="status"></div>
       <div class="usage" id="usageBox">
         <div class="ubody" id="usageBody">
-          <span class="udot" id="usageDot"></span>
-          <div class="item"><span class="k">模型</span><span class="v" id="uModel">—</span></div>
-          <span class="sep"></span>
-          <div class="item"><span class="k">tokens</span><span class="v" id="uTotal">—</span></div>
-          <div class="item"><span class="k">入/出</span><span class="v" id="uSplit">—</span></div>
-          <div class="item"><span class="k">次数</span><span class="v" id="uCalls">—</span></div>
-          <span class="sep"></span>
-          <div class="item"><span class="k">余额</span><span class="v" id="uBalance">—</span></div>
-          <span class="sep"></span>
-          <span class="refresh" id="uRefresh" title="刷新余额">↻</span>
+          <div class="line">
+            <span class="udot" id="usageDot"></span>
+            <div class="item"><span class="k">模型</span><span class="v" id="uModel">—</span></div>
+            <div class="item"><span class="k">★</span><span class="v star" id="uStars">—</span></div>
+          </div>
+          <div class="line">
+            <div class="item"><span class="k">tokens</span><span class="v" id="uTotal">—</span></div>
+            <div class="item"><span class="k">入/出</span><span class="v" id="uSplit">—</span></div>
+            <div class="item"><span class="k">次数</span><span class="v" id="uCalls">—</span></div>
+          </div>
+          <div class="line">
+            <div class="item"><span class="k">余额</span><span class="v" id="uBalance">—</span></div>
+            <span class="refresh" id="uRefresh" title="刷新">↻</span>
+          </div>
         </div>
       </div>
     </div>
@@ -994,6 +999,9 @@ function refreshUsage(force){
         (bal === null || bal === undefined)
           ? (b.err ? '不可用' : '查询中…')
           : (bal + ' ' + (b.currency || 'CNY'));
+      var gh = j.github || {}, st = gh.stars || {};
+      document.getElementById('uStars').textContent =
+        (st.count === null || st.count === undefined) ? '—' : st.count;
       var dot = document.getElementById('usageDot');
       if (dot) dot.className = 'udot' + (b.err ? ' off' : '');
     }).catch(function(){

@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-76"
+BUILD = "b1120-77"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -1375,6 +1375,30 @@ USAGE = {"calls": 0, "prompt": 0, "completion": 0, "total": 0,
 BALANCE = {"value": None, "currency": "CNY", "at": 0.0, "err": ""}
 BALANCE_TTL = 300.0          # 余额缓存 5 分钟
 LLM_MODEL = "deepseek-chat"
+GITHUB_REPO = "pandasoft2026/dafeiyu-smart-speaker"
+GH_STARS = {"count": None, "at": 0.0, "err": ""}
+GH_STARS_TTL = 1800.0        # star 变化慢，缓存 30 分钟
+GH_URL = "https://api.github.com/repos/" + GITHUB_REPO
+
+
+def get_github_stars(force=False):
+    """查项目 GitHub star 数。失败返回上次值或 None，绝不影响对话。"""
+    now = time.time()
+    if not force and GH_STARS["count"] is not None and now - GH_STARS["at"] < GH_STARS_TTL:
+        return dict(GH_STARS)
+    try:
+        req = Request(GH_URL, headers={"Accept": "application/vnd.github+json",
+                                       "User-Agent": "dafeiyu-speaker"})
+        with urlopen(req, timeout=8) as r:
+            d = json.loads(r.read().decode())
+        GH_STARS["count"] = int(d.get("stargazers_count") or 0)
+        GH_STARS["err"] = ""
+        GH_STARS["at"] = now
+    except Exception as e:
+        GH_STARS["err"] = type(e).__name__
+        if not GH_STARS["at"]:
+            GH_STARS["at"] = now
+    return dict(GH_STARS)
 
 
 def _load_usage():
@@ -1797,6 +1821,8 @@ class H(BaseHTTPRequestHandler):
             # 不估算费用：DeepSeek 按时段/模型调价，估算数字只会误导。
             # 真实余额走 /user/balance，那个才准。
             return self._send({"usage": up, "balance": bal, "model": LLM_MODEL,
+                               "github": {"repo": GITHUB_REPO,
+                                          "stars": get_github_stars(force=force)},
                                "build": BUILD})
         if self.path.startswith("/api/idle"):
             # 自测用：看息屏倒计时还剩多久
