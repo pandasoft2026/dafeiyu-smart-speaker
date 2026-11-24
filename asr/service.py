@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-79"
+BUILD = "b1120-78"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
