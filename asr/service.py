@@ -61,7 +61,7 @@ EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这�
 _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
-BUILD = "b1120-77"
+BUILD = "b1120-79"
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -1824,6 +1824,15 @@ class H(BaseHTTPRequestHandler):
                                "github": {"repo": GITHUB_REPO,
                                           "stars": get_github_stars(force=force)},
                                "build": BUILD})
+        if self.path.startswith("/api/dashboard"):
+            # 顶栏行情天气条。取不到的数据返回 null，前端显示「—」，绝不编造。
+            try:
+                import market as _mk
+                force = "force=1" in self.path
+                return self._send(_mk.get_dashboard(force=force))
+            except Exception as e:
+                return self._send({"err": "%s: %s" % (type(e).__name__, e),
+                                   "market": [], "weather": {}}, 502)
         if self.path.startswith("/api/idle"):
             # 自测用：看息屏倒计时还剩多久
             return self._send({"idle_off": IDLE_OFF,

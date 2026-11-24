@@ -35,8 +35,31 @@
 
   .app { position:relative; width:1280px; height:800px; display:flex; flex-direction:column; }
 
-  /* 顶栏 */
-  .top { height:78px; flex:0 0 78px; display:flex; align-items:center; padding:0 32px; gap:13px; }
+  /* 顶栏：上层品牌状态行 + 下层行情条 */
+  .top {
+    height:132px; flex:0 0 132px; display:flex; flex-direction:column;
+    padding:8px 32px 6px;
+  }
+  .top-row { display:flex; align-items:center; gap:13px; height:52px; flex:0 0 52px; }
+
+  /* 行情条：2 行 × 6 列，字号不小于状态 chip 的 18px */
+  .market-bar {
+    flex:1 1 auto; display:grid; grid-template-columns:repeat(6, 1fr);
+    grid-template-rows:repeat(2, 1fr); column-gap:6px; row-gap:1px;
+    align-items:center;
+  }
+  .mkt {
+    display:flex; align-items:baseline; gap:6px; white-space:nowrap;
+    font-size:18px; font-weight:800; color:#335F7E; line-height:1.15;
+  }
+  .mkt .n { color:#7298B5; font-size:18px; }
+  .mkt .p { color:#123F61; font-variant-numeric:tabular-nums; }
+  .mkt .c { font-size:18px; font-variant-numeric:tabular-nums; }
+  .mkt .up { color:#D8403B; }     /* 涨=红（A股习惯） */
+  .mkt .down { color:#159A6A; }   /* 跌=绿 */
+  .mkt .flat { color:#8FAABE; }
+  .mkt.weather .n { color:#C08030; }
+  .mkt.weather .p { color:#A06020; }
   .logo { width:44px; height:44px; border-radius:14px; flex:0 0 44px; object-fit:cover; box-shadow:0 6px 16px rgba(46,155,240,.26); }
   .brand { font-size:26px; font-weight:900; letter-spacing:.5px; color:#0F3355; line-height:1.1; white-space:nowrap; }
   .sub { font-size:15px; color:#7C9FBA; font-weight:700; margin-left:6px; white-space:nowrap; }
@@ -249,12 +272,16 @@
 
   <div class="app">
     <div class="top">
-      <img class="logo" id="logo" src="avatar_192.png" alt="">
-      <div class="brand" id="brand">大肥鱼</div>
-      <div class="sub" id="sub">本地离线语音</div>
-      <div class="spacer"></div>
-      <div class="chip"><span class="dot" id="dot"></span><span id="netTxt">就绪</span></div>
-      <div class="clock" id="clock">--:--</div>
+      <div class="top-row">
+        <img class="logo" id="logo" src="avatar_192.png" alt="">
+        <div class="brand" id="brand">大肥鱼</div>
+        <div class="sub" id="sub">本地离线语音</div>
+        <div class="spacer"></div>
+        <div class="mkt weather" id="weatherChip"><span class="n">绵阳</span><span class="p" id="wTxt">—</span></div>
+        <div class="chip"><span class="dot" id="dot"></span><span id="netTxt">就绪</span></div>
+        <div class="clock" id="clock">--:--</div>
+      </div>
+      <div class="market-bar" id="marketBar"></div>
     </div>
 
     <div class="main">
@@ -1013,6 +1040,56 @@ function refreshUsage(force){
   if (rf) rf.addEventListener('click', function(){ refreshUsage(true); });
 })();
 
+/* ---------- 顶栏行情/天气条 ----------
+   10 秒刷新一次；服务端对行情缓存 30s、天气 10min，所以不会打爆接口。
+   节点只建一次，后续只改文本 —— 这台 4×A35 上反复重建 DOM 会卡。 */
+var mktNodes = [];
+var mktTimer = null;
+function fmtPx(v){
+  if (v === null || v === undefined) return '—';
+  return (Math.round(v * 100) / 100).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtPct(v){
+  if (v === null || v === undefined) return '';
+  return (v >= 0 ? '+' : '') + (Math.round(v * 100) / 100).toFixed(2) + '%';
+}
+function mktClass(v){ return v === null || v === undefined ? 'flat' : (v > 0 ? 'up' : (v < 0 ? 'down' : 'flat')); }
+function makeMktNode(isWeather){
+  var d = document.createElement('div');
+  d.className = 'mkt' + (isWeather ? ' weather' : '');
+  var n = document.createElement('span'); n.className = 'n';
+  var p = document.createElement('span'); p.className = 'p';
+  var c = document.createElement('span'); c.className = 'c';
+  d.appendChild(n); d.appendChild(p); d.appendChild(c);
+  return {el:d, n:n, p:p, c:c};
+}
+function renderMarket(d){
+  var bar = document.getElementById('marketBar');
+  if (!bar || !d) return;
+  var list = d.market || [];
+  // 行情条固定 12 格（2行×6列）；天气单独放在顶行
+  var total = list.length;
+  while (mktNodes.length < total) {
+    var nd = makeMktNode(false);
+    mktNodes.push(nd); bar.appendChild(nd.el);
+  }
+  for (var i = 0; i < list.length; i++) {
+    var it = list[i], nd = mktNodes[i];
+    nd.n.textContent = it.name;
+    nd.p.textContent = fmtPx(it.price);
+    nd.c.textContent = fmtPct(it.pct);
+    nd.c.className = 'c ' + mktClass(it.pct);
+  }
+  var w = d.weather || {}, wt = document.getElementById('wTxt');
+  if (wt) wt.textContent = w.temp === null || w.temp === undefined ? '—' : (Math.round(w.temp) + '° ' + (w.desc || ''));
+}
+function refreshMarket(){
+  return fetch(API + '/api/dashboard', {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ renderMarket(d); })
+    .catch(function(){ /* 取不到就保留上次的值，不显示假数据 */ });
+}
+
 (function boot(){
   // 预载梁圣背景，避免切换时白闪
   try { var pi = new Image(); pi.src = 'sage_bg.jpg'; } catch(e){}
@@ -1030,6 +1107,9 @@ function refreshUsage(force){
     setInterval(health, 8000);
     // 用量横条：启动时拉一次；之后每次对话结束刷新一次（见 showTurn / micTurn）
     refreshUsage(false);
+    // 顶栏行情：启动拉一次，之后每 10 秒
+    refreshMarket();
+    mktTimer = setInterval(refreshMarket, 10000);
   });
 })();
 </script>
