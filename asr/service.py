@@ -103,10 +103,12 @@ def push_event(ev):
 # 这里把 edge_tts_lite 直接接进来：音箱自己连微软朗读服务、自己拿 mp3，
 # 电脑彻底退出链路。
 #
-# 合成结果按 (音色|音调|语速|文本) 存一份到 /dev（tmpfs，不磨损 flash）。
-# 日常对话里「好的」「我在」「嗯？」这类短句复用率很高，第二次就是零延迟。
+# 合成结果按 (音色|音调|语速|文本) 缓存。
+# 原先放 /dev（tmpfs）不磨损 flash，但**重启全丢**——每次开机预合成的固定
+# 话术、累积的常用句都要重新联网，等于每次开机都依赖网络。转到 /data 持久化：
+# 实测 60 条才 2MB，写放大可忽略（真正的大头是录音，仍留在 /dev）。
 # ---------------------------------------------------------------------------
-TTS_DIR = os.path.join(SCRATCH, "dfy_tts")
+TTS_DIR = os.path.join(BASE, "tts_cache")
 TTS_VOICE = {"fish": "zh-CN-XiaoyiNeural", "sage": "zh-CN-YunyangNeural"}
 TTS_TUNE = {"fish": (28, 4), "sage": (-10, -6)}     # (pitch 加多少 Hz, rate 加多少 %)
 TTS_CACHE_MAX = 60                                  # 最多留 60 条
@@ -116,6 +118,37 @@ _tts_locks = {}
 _tts_lk = threading.Lock()
 _tts_stat = {"hit": 0, "miss": 0, "err": 0}
 _tts = None
+
+
+def _migrate_tts_cache():
+    """把旧版 /dev（tmpfs）里的 TTS 缓存搬到 /data 持久化，只搬一次。"""
+    old = os.path.join(SCRATCH, "dfy_tts")
+    try:
+        if not os.path.isdir(old):
+            return
+        os.makedirs(TTS_DIR, exist_ok=True)
+        n = 0
+        for name in os.listdir(old):
+            if not name.endswith(".mp3"):
+                continue
+            src = os.path.join(old, name)
+            dst = os.path.join(TTS_DIR, name)
+            if os.path.exists(dst):
+                continue
+            try:
+                # /dev 是 tmpfs、/data 是 ext4，跨文件系统不能 os.replace，
+                # 必须 copy 再删（实测报 Cross-device link）。
+                with open(src, "rb") as fi, open(dst + ".tmp", "wb") as fo:
+                    fo.write(fi.read())
+                os.replace(dst + ".tmp", dst)
+                os.remove(src)
+                n += 1
+            except OSError:
+                pass
+        if n:
+            log("TTS 缓存迁移 %d 条 -> /data" % n)
+    except OSError:
+        pass
 
 
 def tts_mod():
@@ -2101,6 +2134,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     init_asr()
+    _migrate_tts_cache()
     apply_brightness()
     threading.Thread(target=wake_loop, daemon=True).start()
     threading.Thread(target=idle_watch, daemon=True).start()
