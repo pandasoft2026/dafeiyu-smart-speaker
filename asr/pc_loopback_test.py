@@ -3,6 +3,7 @@
 winsound 播放唤醒词 wav，同时设备 tinycap 录音，分析峰值确认设备能"听到"PC。
 """
 import array
+import os
 import subprocess
 import sys
 import threading
@@ -37,8 +38,11 @@ def peak(path):
     return max(vals), sum(vals) / len(vals)
 
 
-adb(["connect", "192.168.137.254:5555"])
-time.sleep(1)
+# 设备地址从环境变量取，避免把内网 IP 写进公开仓库
+DEV = os.environ.get("SPEAKER_ADB", "")
+if DEV:
+    adb(["connect", DEV])
+    time.sleep(1)
 print("设备:", adb(["devices"]))
 
 print("=== 基线：不播放时设备录音 2s ===")
