@@ -37,8 +37,8 @@
 
   /* 顶栏：上层品牌状态行 + 下层行情条 */
   .top {
-    height:132px; flex:0 0 132px; display:flex; flex-direction:column;
-    padding:8px 32px 6px;
+    height:170px; flex:0 0 170px; display:flex; flex-direction:column;
+    padding:6px 32px 6px;
   }
   .top-row { display:flex; align-items:center; gap:13px; height:52px; flex:0 0 52px; }
 
@@ -60,6 +60,20 @@
   .mkt .flat { color:#8FAABE; }
   .mkt.weather .n { color:#C08030; }
   .mkt.weather .p { color:#A06020; }
+
+  /* 五天预报条 */
+  .weather-bar {
+    flex:0 0 34px; height:34px; display:flex; align-items:center;
+    gap:0; border-top:1px solid rgba(46,155,240,.10); margin-top:2px;
+  }
+  .wday {
+    flex:1; display:flex; align-items:center; justify-content:center; gap:7px;
+    font-size:17px; font-weight:800; color:#5A7F9B; white-space:nowrap;
+  }
+  .wday .wd { color:#3D7097; }
+  .wday .wt { color:#C08030; }
+  .wday .wn { color:#20557B; font-variant-numeric:tabular-nums; }
+  .wday.today .wd { color:#D08020; }
   .logo { width:44px; height:44px; border-radius:14px; flex:0 0 44px; object-fit:cover; box-shadow:0 6px 16px rgba(46,155,240,.26); }
   .brand { font-size:26px; font-weight:900; letter-spacing:.5px; color:#0F3355; line-height:1.1; white-space:nowrap; }
   .sub { font-size:15px; color:#7C9FBA; font-weight:700; margin-left:6px; white-space:nowrap; }
@@ -75,7 +89,7 @@
   .clock { font-size:21px; font-weight:900; color:#2E7FB8; margin-left:16px; font-variant-numeric:tabular-nums; }
 
   /* 主体 */
-  .main { flex:1 1 auto; display:flex; min-height:0; padding:0 32px 0; gap:14px; }
+  .main { flex:1 1 auto; display:flex; min-height:0; padding:10px 32px 0; gap:14px; }
 
   .hero { flex:0 0 500px; width:500px; position:relative; display:flex; align-items:center; justify-content:center; overflow:visible; }
   .hero .halo {
@@ -277,11 +291,12 @@
         <div class="brand" id="brand">大肥鱼</div>
         <div class="sub" id="sub">本地离线语音</div>
         <div class="spacer"></div>
-        <div class="mkt weather" id="weatherChip"><span class="n">绵阳</span><span class="p" id="wTxt">—</span></div>
+        <div class="mkt weather" id="weatherChip"><span class="n">成都</span><span class="p" id="wTxt">—</span></div>
         <div class="chip"><span class="dot" id="dot"></span><span id="netTxt">就绪</span></div>
         <div class="clock" id="clock">--:--</div>
       </div>
       <div class="market-bar" id="marketBar"></div>
+      <div class="weather-bar" id="weatherBar"></div>
     </div>
 
     <div class="main">
@@ -1082,6 +1097,26 @@ function renderMarket(d){
   }
   var w = d.weather || {}, wt = document.getElementById('wTxt');
   if (wt) wt.textContent = w.temp === null || w.temp === undefined ? '—' : (Math.round(w.temp) + '° ' + (w.desc || ''));
+  // 未来五天预报
+  var days = w.days || [], bar = document.getElementById('weatherBar');
+  if (bar) {
+    while (bar.children.length < days.length) {
+      var d0 = document.createElement('div'); d0.className = 'wday';
+      var a = document.createElement('span'); a.className = 'wd';
+      var b = document.createElement('span'); b.className = 'wt';
+      var c = document.createElement('span'); c.className = 'wn';
+      d0.appendChild(a); d0.appendChild(b); d0.appendChild(c);
+      bar.appendChild(d0);
+    }
+    for (var k = 0; k < days.length; k++) {
+      var dd = days[k], el = bar.children[k];
+      el.className = 'wday' + (k === 0 ? ' today' : '');
+      el.children[0].textContent = dd.day;
+      el.children[1].textContent = dd.desc || '—';
+      el.children[2].textContent = (dd.hi === null || dd.hi === undefined ? '—' : Math.round(dd.hi) + '°')
+        + '/' + (dd.lo === null || dd.lo === undefined ? '—' : Math.round(dd.lo) + '°');
+    }
+  }
 }
 function refreshMarket(){
   return fetch(API + '/api/dashboard', {cache:'no-store'})

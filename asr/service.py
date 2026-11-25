@@ -837,6 +837,11 @@ _STRICT_WAKE = (
     "你好肥鱼", "您好肥鱼", "你好大肥鱼", "您好大肥鱼",
     "你好梁圣", "您好梁圣", "梁圣梁圣", "良圣良圣",
 )
+# 唤醒词专用近音归一：只用在唤醒判定，不碰通用 ASR 输出。
+# 真人实测「肥鱼肥鱼」Vosk 会听成「肥育肥鱼」/「肥腴肥鱼」，不归一就唤醒失败。
+_WAKE_FIX = (("肥育", "肥鱼"), ("肥雨", "肥鱼"), ("肥语", "肥鱼"),
+             ("肥腴", "肥鱼"), ("肥余", "肥鱼"), ("费鱼", "肥鱼"),
+             ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣"))
 
 
 def _strict_wake_hit(t):
@@ -852,31 +857,40 @@ def _strict_wake_hit(t):
     return (best_end >= 0), best_end, best_who
 
 
-def handle_wake_text(t):
-    """命中返回 ("wake", 问题) / ("mode", 模式)；没命中返回 False"""
-    t2 = t.replace(" ", "")
+def classify_wake(t):
+    """纯判定（无副作用）：返回 (动作, 人设, 问题)。
+    动作: 'mode' 切人设 / 'ask' 唤醒拾音 / 'reject' 不理会。
+    handle_wake_text 和 /api/route 都用它，保证自测和线上判定完全一致。
+    """
+    t2 = (t or "").replace(" ", "")
     if not t2:
-        return False
+        return ("reject", None, "")
+    # 只在唤醒判定层做近音归一，不影响通用识别结果
+    for a, b in _WAKE_FIX:
+        t2 = t2.replace(a, b)
 
-    # 切人设：单独判定，且只在明确的「召唤/切换 + 名字」时才切，不拾音。
+    # 切人设：只在明确的「召唤/切换 + 名字」时才切，不拾音。
     if any(w in t2 for w in SWITCH_WORDS):
         hf, hs = _has_fish(t2), _has_sage(t2)
         if hf or hs:
-            end, who = _find_name(t2)
-            if end < 0 and len(t2) <= 12:
-                end, who = _find_fuzzy_name(t2)
-            if who or hf or hs:
-                set_mode("sage" if (hs and not hf) else "fish")
-                return ("mode", STATE["mode"])
-        return False
+            return ("mode", "sage" if (hs and not hf) else "fish", "")
+        return ("reject", None, "")
 
     # 对话唤醒：必须严格白名单命中
     hit, end, who = _strict_wake_hit(t2)
     if not hit:
-        return False
-    # 只取严格唤醒语之后的内容当问题
-    q = _clean_tail(t2[end:])
+        return ("reject", None, "")
+    return ("ask", who, _clean_tail(t2[end:]))
 
+
+def handle_wake_text(t):
+    """命中返回 ("wake", 问题) / ("mode", 模式)；没命中返回 False"""
+    act, who, q = classify_wake(t)
+    if act == "reject":
+        return False
+    if act == "mode":
+        set_mode(who)
+        return ("mode", STATE["mode"])
     # 严格命中即唤醒拾音。若喊的是另一人设且没带问题，顺便切过去（不额外播报）。
     if who == "sage" and STATE["mode"] != "sage" and not q:
         set_mode("sage")
@@ -1478,11 +1492,35 @@ def load_key():
         return ""
 
 
+def _weather_context():
+    """把当前天气塞进 system prompt，让「今天天气怎么样」有数据可答。
+    复用 market.py 的缓存（天气 10min），不会每次对话都去抓接口。"""
+    try:
+        import market as _mk
+        d = _mk.get_dashboard().get("weather") or {}
+        if d.get("temp") is None:
+            return ""
+        days = d.get("days") or []
+        today = days[0] if days else {}
+        forecast = "；".join(
+            "%s %s %s~%s°C" % (x.get("day", "?"), x.get("desc", "?"),
+                              round(x["lo"]) if x.get("lo") is not None else "?",
+                              round(x["hi"]) if x.get("hi") is not None else "?")
+            for x in days[:5])
+        return ("\n\n【实时信息，回答天气问题时要用到】地点：%s；当前 %s°C %s；"
+                "未来五天：%s。这是真实数据，别再说「我看不到天气」，"
+                "问哪天就按上面哪天答，别自己编。"
+                % (d.get("city", "成都"), round(d["temp"]), d.get("desc", ""),
+                   forecast or "暂无"))
+    except Exception:
+        return ""
+
+
 def ask_deepseek(text, history=None):
     key = load_key()
     if not key:
         return "（还没配置接口密钥）"
-    msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"])}]
+    msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"]) + _weather_context()}]
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
@@ -1546,7 +1584,7 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
     key = load_key()
     if not key:
         return "（还没配置接口密钥）", 0.0, 0.0
-    msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"])}]
+    msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"]) + _weather_context()}]
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
@@ -1874,14 +1912,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send({"ok": True, "mode": STATE["mode"]})
 
             if p.startswith("/api/route"):
-                # 自测用：把一段「识别结果」喂进 do_turn 的分流逻辑，
-                # 看它会被当成切换人设还是当成问题
+                # 自测用：把一段「识别结果」喂进唤醒判定，看真实会怎么分流。
+                # 必须与线上 handle_wake_text 用同一个 classify_wake，否则自测会骗人。
                 t = (body.get("text") or "").strip()
-                who = _name_of(t) if len(t) <= 12 else None
-                act = "ask"
-                if who and (any(w in t for w in SWITCH_WORDS) or len(t) <= 6):
-                    act = "mode:" + who
-                return self._send({"text": t, "name": who, "action": act})
+                act, who, q = classify_wake(t)
+                return self._send({"text": t, "name": who, "action": act,
+                                   "q": q, "wake": act == "ask"})
 
             if p.startswith("/api/activity"):
                 # 界面点了/按了键就报一声，用来把息屏倒计时清零

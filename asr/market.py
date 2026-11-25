@@ -136,19 +136,41 @@ def _fetch_market():
 
 
 def _fetch_weather():
-    # 绵阳 31.47N 104.74E
-    url = ("https://api.open-meteo.com/v1/forecast?latitude=31.47&longitude=104.74"
-           "&current=temperature_2m,relative_humidity_2m,weather_code&timezone=Asia%2FShanghai")
+    # 成都 30.57N 104.07E，当前天气 + 未来 5 天
+    url = ("https://api.open-meteo.com/v1/forecast?latitude=30.57&longitude=104.07"
+           "&current=temperature_2m,relative_humidity_2m,weather_code"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+           "&forecast_days=5&timezone=Asia%2FShanghai")
     try:
         d = json.loads(_http(url, timeout=12).decode())
         cur = d.get("current", {})
         code = cur.get("weather_code")
+        daily = d.get("daily", {})
+        days = []
+        times = daily.get("time") or []
+        codes = daily.get("weather_code") or []
+        hi = daily.get("temperature_2m_max") or []
+        lo = daily.get("temperature_2m_min") or []
+        for i, t in enumerate(times[:5]):
+            # 日期显示 周几
+            try:
+                import datetime
+                dt = datetime.date.fromisoformat(t)
+                label = "周" + "一二三四五六日"[dt.weekday()]
+            except Exception:
+                label = t[5:] if len(t) >= 10 else "—"
+            days.append({"day": label,
+                         "desc": WMO.get(codes[i] if i < len(codes) else None, "—"),
+                         "hi": _num(str(hi[i])) if i < len(hi) else None,
+                         "lo": _num(str(lo[i])) if i < len(lo) else None})
         return {"temp": _num(str(cur.get("temperature_2m"))),
                 "desc": WMO.get(code, "—"),
                 "hum": cur.get("relative_humidity_2m"),
+                "city": "成都", "days": days,
                 "at": time.time()}
     except Exception:
-        return {"temp": None, "desc": "—", "hum": None, "at": time.time()}
+        return {"temp": None, "desc": "—", "hum": None,
+                "city": "成都", "days": [], "at": time.time()}
 
 
 def get_dashboard(force=False):
