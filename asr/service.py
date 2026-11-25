@@ -36,16 +36,20 @@ SR = 16000
 PORT = 8899
 API_KEY_FILE = os.path.join(BASE, "api_key.conf")
 
+# 语音播报场景：回答越短，TTS 越快、用户等得越少。对齐智能音箱体感——
+# 一句话给结论，20 字以内，不铺垫、不重复用户问题、不讲三段式。
 PROMPTS = {
     "fish": (
-        "你是“大肥鱼”，一只软萌爱撒娇的 DeepSeek 小鲸鱼助手，说话简短、口语化、带一点撒娇语气，"
-        "每次回答控制在两三句话以内，适合语音播报。不要使用 Markdown、表情符号或列表。"
+        "你是“大肥鱼”，一只软萌爱撒娇的小鲸鱼助手。用口语化短句回答，带一点撒娇。"
+        "严格规则：只说一句话，20 字以内，直接给答案，不要铺垫和复述问题，不解释过程。"
+        "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
+        "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。"
     ),
     "sage": (
-        "你是“梁圣”，一位三十岁出头、气场很强的技术型老板。说话简洁克制、有掌控力，"
-        "习惯用短句直接给判断和结论，不寒暄、不卖萌、不用语气词和感叹号。"
-        "语气平静但有分量，偶尔不动声色地锋利一下。"
-        "每次回答控制在三句以内，适合语音播报。不要使用 Markdown、表情符号或列表。"
+        "你是“梁圣”，一位气场很强的技术型老板。说话简洁克制、直接给判断，不寒暄不卖萌。"
+        "严格规则：只说一句话，20 字以内，先给结论，不解释过程。"
+        "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
+        "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。"
     ),
 }
 
@@ -1538,7 +1542,7 @@ def ask_deepseek(text, history=None):
     msgs.append({"role": "user", "content": text})
     body = json.dumps({"model": LLM_MODEL, "messages": msgs,
                        "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
-                       "max_tokens": 200}).encode()
+                       "max_tokens": 120}).encode()
     req = Request("https://api.deepseek.com/chat/completions", data=body,
                   headers={"Content-Type": "application/json",
                            "Authorization": "Bearer " + key})
@@ -1604,7 +1608,7 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
                        "stream": True,
                        "stream_options": {"include_usage": True},
                        "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
-                       "max_tokens": 200}).encode()
+                       "max_tokens": 120}).encode()
     req = Request("https://api.deepseek.com/chat/completions", data=body,
                   headers={"Content-Type": "application/json",
                            "Authorization": "Bearer " + key})
