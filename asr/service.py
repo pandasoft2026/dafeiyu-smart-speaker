@@ -62,6 +62,11 @@ _lock = threading.Lock()
 _asr = {}
 WAKE_DEBUG = True
 BUILD = "b1120-78"
+# 实时拾音峰值诊断（给 PC 喇叭回环测试用）：滑动窗口最大值，只观测不改逻辑
+LIVE_PEAK = {"max": 0, "at": 0.0}
+# 开闸门限：默认 800（真人对着喊 peak 2000+）。PC 喇叭回环测试时可临时调低，
+# 测完必须恢复——这是诊断旋钮，不是生产默认值。
+WAKE_GATE_FLOOR = [800.0]
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -997,7 +1002,7 @@ def stream_wake(rec, lib, max_sec=90):
     n_gate = 0        # 统计：真正送进 Vosk 的采样点数
     fed_gate = 0      # 本次开闸喂进去的采样点数
     gate_peak = 0     # 本次开闸期间的最大响度（混音后）
-    GATE_FLOOR = 800.0
+    GATE_FLOOR = WAKE_GATE_FLOOR[0]
     thr = GATE_FLOOR
     # 诊断用：闲置块峰值落在哪个区间，用来校准门限（WAKE_DEBUG 时打印）
     hist = [0, 0, 0, 0, 0]
@@ -1046,6 +1051,10 @@ def stream_wake(rec, lib, max_sec=90):
                     v = hi if hi > -lo else -lo
                     if v > rpk:
                         rpk = v
+                # 诊断：记录最近拾音峰值（3 秒窗口自然衰减）
+                if rpk > LIVE_PEAK["max"] or time.time() - LIVE_PEAK["at"] > 3:
+                    LIVE_PEAK["max"] = rpk
+                    LIVE_PEAK["at"] = time.time()
                 if nf < 0:
                     # 首块就用它定底噪，但万一开口就是人声（或一声巨响），
                     # 不能把门限永久抬高，否则这一整段唤醒就废了
@@ -1862,6 +1871,11 @@ class H(BaseHTTPRequestHandler):
                                "github": {"repo": GITHUB_REPO,
                                           "stars": get_github_stars(force=force)},
                                "build": BUILD})
+        if self.path.startswith("/api/peak"):
+            # 诊断：最近 3 秒拾音峰值 + 当前开闸门限，用来对齐 PC 回环电平
+            return self._send({"peak": LIVE_PEAK["max"],
+                               "age": round(time.time() - LIVE_PEAK["at"], 2),
+                               "gate": WAKE_GATE_FLOOR[0]})
         if self.path.startswith("/api/dashboard"):
             # 顶栏行情天气条。取不到的数据返回 null，前端显示「—」，绝不编造。
             try:
@@ -1907,6 +1921,11 @@ class H(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n).decode() or "{}") if n else {}
             p = self.path
 
+            if p.startswith("/api/peak"):
+                # 诊断旋钮：临时调开闸门限（PC 回环测试用）。传 0 恢复默认 800。
+                v = float(body.get("gate", 0))
+                WAKE_GATE_FLOOR[0] = v if v > 0 else 800.0
+                return self._send({"ok": True, "gate": WAKE_GATE_FLOOR[0]})
             if p.startswith("/api/mode"):
                 set_mode(body.get("mode", "fish"))
                 return self._send({"ok": True, "mode": STATE["mode"]})
