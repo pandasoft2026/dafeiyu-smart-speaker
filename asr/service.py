@@ -458,6 +458,25 @@ def set_mode(m):
     push_event({"type": "mode", "mode": m})
 
 
+def alarm_watch():
+    """闹钟到点提醒：每 20 秒轮询一次，到点推事件 + 播报。
+    忙时不抢麦克风，等当前对话结束再播（下个轮询周期补上）。"""
+    while True:
+        time.sleep(20)
+        state = {"busy": False}
+        try:
+            due = __import__("planner").due_alarms()
+        except Exception:
+            continue
+        for a in due[:3]:
+            txt = "闹钟时间到，%s" % a.get("text", "提醒")
+            log("alarm 到点", txt)
+            # 推事件给前端：前端弹卡片并用自己的 TTS 队列播报，
+            # 服务端不碰音频，避免和正在进行的对话抢麦克风。
+            push_event({"type": "alarm", "text": a.get("text", ""),
+                        "answer": txt, "mode": STATE["mode"]})
+
+
 # ---------------- 录音 ----------------
 def read_pcm_all(path):
     with open(path, "rb") as f:
@@ -1762,6 +1781,28 @@ def answer_question(q, notify=True):
     if notify:
         push_event({"type": "heard", "q": q, "streaming": 1})
 
+    # 闹钟/备忘录/日程：本地规则处理，不麻烦大模型，响应也快
+    try:
+        import planner as _pl
+        pr = _pl.handle(q)
+        if pr:
+            ans = pr.get("answer")
+            if ans:
+                if notify:
+                    push_event({"type": "partial", "q": q, "text": ans,
+                                "idx": 0, "mode": STATE["mode"]})
+            ev = {"type": "turn", "q": q, "answer": ans or "",
+                  "mode": STATE["mode"], "streamed": 1 if ans else 0}
+            if pr.get("card"):
+                ev["card"] = pr["card"]
+                if notify:
+                    push_event({"type": "card", "card": pr["card"]})
+            if notify:
+                push_event(ev)
+            return ev
+    except Exception:
+        log("planner 失败", traceback.format_exc()[-160:])
+
     def emit(sentence, idx):
         if notify:
             push_event({"type": "partial", "q": q, "text": sentence,
@@ -2156,6 +2197,19 @@ class H(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send({"err": "%s: %s" % (type(e).__name__, e)})
 
+            if p.startswith("/api/planner"):
+                # 前端主动拉卡片：kind=alarm|note|event，全部则返回三张
+                try:
+                    import planner as _pl
+                    kind = body.get("kind", "")
+                    if kind in ("alarm", "note", "event"):
+                        return self._send(_pl.card(kind)["card"])
+                    return self._send({"alarms": _pl.card("alarm")["card"],
+                                       "notes": _pl.card("note")["card"],
+                                       "events": _pl.card("event")["card"]})
+                except Exception as e:
+                    return self._send({"err": "%s: %s" % (type(e).__name__, e)})
+
             if p.startswith("/api/debug/answer"):
                 # 造一轮假对话推给前端，用来验证界面渲染与语音播报
                 q = body.get("text") or "肥鱼肥鱼"
@@ -2228,5 +2282,6 @@ if __name__ == "__main__":
     threading.Thread(target=idle_watch, daemon=True).start()
     threading.Thread(target=wake_watch, daemon=True).start()
     threading.Thread(target=tts_warm, daemon=True).start()
+    threading.Thread(target=alarm_watch, daemon=True).start()
     log("listening on 127.0.0.1:%d" % PORT)
     srv.serve_forever()

@@ -159,6 +159,40 @@
     background:linear-gradient(135deg,#3EA9F7,#2E8FE8); color:#fff;
     border-top-right-radius:7px; box-shadow:0 10px 24px rgba(46,143,232,.26);
   }
+  /* ===== 对话内卡片：闹钟 / 备忘录 / 日程（一页放下） ===== */
+  .row.ai .bubble.cardhost { padding:10px 12px; max-width:660px; white-space:normal; }
+  .pcard { width:610px; max-width:100%; font-size:20px; line-height:1.2; }
+  .pcard .chd { display:flex; align-items:center; gap:10px; padding:0 4px 8px;
+    border-bottom:2px solid rgba(46,155,240,.20); }
+  .pcard .cico { width:34px; height:34px; border-radius:10px; flex:0 0 34px;
+    display:flex; align-items:center; justify-content:center; font-size:21px;
+    background:linear-gradient(135deg,#EAF5FF,#D3E9FB); }
+  .pcard .ct { font-size:27px; font-weight:900; color:#1B5C8E; letter-spacing:1px; }
+  .pcard .cs { font-size:16px; font-weight:700; color:#8FAFCA; margin-left:auto; }
+  .pcard .crow { display:flex; align-items:center; gap:10px; min-height:40px;
+    padding:5px 6px; border-bottom:1px solid rgba(46,155,240,.10); }
+  .pcard .crow:last-of-type { border-bottom:0; }
+  .pcard .cday { flex:0 0 76px; font-size:19px; font-weight:900; color:#2E7FB8; }
+  .pcard .ctime { flex:0 0 84px; font-size:19px; font-weight:800; color:#C08218;
+    font-variant-numeric:tabular-nums; }
+  .pcard .ctxt { flex:1; min-width:0; font-size:21px; font-weight:700; color:#164A70;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pcard .cempty { padding:22px 6px; text-align:center; font-size:20px;
+    font-weight:700; color:#9CB8CC; }
+  .pcard .cft { padding-top:7px; text-align:center; font-size:15px;
+    font-weight:700; color:#A6C2D8; }
+  /* 梁圣模式：深色玻璃卡片，金字 */
+  .sage .row.ai .bubble.cardhost { background:rgba(12,22,36,.94); border-color:rgba(216,178,106,.42); }
+  .pcard .chd { border-bottom-color:rgba(216,178,106,.30); }
+  .pcard .ct, .sage .pcard .ct { color:#F0D89A; }
+  .sage .pcard .cs { color:#9FAFBF; }
+  .sage .pcard .cico { background:linear-gradient(135deg,#3A3020,#1A2430); }
+  .sage .pcard .cday { color:#D8B26A; }
+  .sage .pcard .ctime { color:#E2C58C; }
+  .sage .pcard .ctxt { color:#EAF2FA; }
+  .sage .pcard .crow { border-bottom-color:rgba(216,178,106,.14); }
+  .sage .pcard .cempty, .sage .pcard .cft { color:#8FA5B9; }
+
   .typing { display:inline-flex; gap:7px; padding:4px 0; }
   .typing i { width:10px; height:10px; border-radius:50%; background:#8CC6F0; animation:blink 1.3s infinite; }
   .typing i:nth-child(2){animation-delay:.18s} .typing i:nth-child(3){animation-delay:.36s}
@@ -460,6 +494,41 @@ function addRow(side, text){
   chat.appendChild(row); scrollDown();
   trimChat();
   return row.querySelector('.bubble');
+}
+
+/* 对话里插入一张「闹钟/备忘/日程」卡片，一页放得下 */
+var CARD_ICO = {alarm:'⏰', note:'📝', event:'📅'};
+var CARD_FOOT = {alarm:'说「设个闹钟明早七点」添加',
+                 note:'说「记住买牛奶」添加', event:'说「安排周五三点开会」添加'};
+function renderCardInto(b, c){
+  if (!b || !c) return b;
+  var rows = c.rows || [];
+  var h = '<div class="pcard"><div class="chd"><div class="cico">' +
+          (CARD_ICO[c.kind] || '📋') + '</div><div class="ct">' +
+          (c.title || '清单') + '</div><div class="cs">' + (c.sub || '') + '</div></div>';
+  if (!rows.length) {
+    h += '<div class="cempty">还没有内容，说一句话就能添加～</div>';
+  } else {
+    for (var i = 0; i < rows.length && i < 7; i++) {
+      var r = rows[i];
+      h += '<div class="crow"><div class="cday">' + esc(r.day) +
+           '</div><div class="ctime">' + esc(r.time) +
+           '</div><div class="ctxt">' + esc(r.text) + '</div></div>';
+    }
+  }
+  h += '<div class="cft">' + (CARD_FOOT[c.kind] || '') + '</div></div>';
+  b.className = 'bubble cardhost';
+  b.innerHTML = h;
+  scrollDown();
+  return b;
+}
+function addCard(c){
+  if (!c) return;
+  renderCardInto(addRow('ai', ''), c);
+}
+function esc(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function addTyping(){
@@ -837,9 +906,16 @@ function showTurn(ev){
   lastQ = '';
   var ans = ev.answer || '嗯…我没想好';
   chatHist.push({role:'assistant', content: ans});
-  if (ev.streamed && window.__streamAiRow) {
+  if (ev.card) {
+    // 带卡片：把 partial 建的气泡直接变成卡片，不再重复插一条。
+    // 回答文字已由 partial 队列播报过了，屏幕上只留一眼能看完的清单。
+    var cb = window.__streamAiRow || addRow('ai', '');
+    window.__streamAiRow = null;
+    renderCardInto(cb, ev.card);
+    streamEnd();
+    setStatus('');
+  } else if (ev.streamed && window.__streamAiRow) {
     // 流式路径：partial 已经建了气泡并逐句填字，这里**复用同一个气泡**补全。
-    // 原来这里又 addRow 建一个新气泡再 typeOut，答案就显示两遍（实测用户反馈）。
     var b = window.__streamAiRow;
     window.__streamAiRow = null;
     b.textContent = ans;          // 直接补全文（partial 可能少最后一句）
@@ -851,6 +927,18 @@ function showTurn(ev){
     typeOut(b2, ans, function(){ setStatus(''); });
   }
   refreshUsage(false);   // 对话结束刷新一次用量/余额
+}
+
+/* 独立的 card 事件（前端主动拉或闹钟触发时用）：新插一条卡片气泡 */
+function onCard(ev){
+  if (!ev || !ev.card) return;
+  idle();
+  addCard(ev.card);
+}
+function onAlarm(ev){
+  if (!ev) return;
+  addSys('⏰ 闹钟：' + (ev.text || '时间到'));
+  if (ev.answer) speak(ev.answer);
 }
 
 /* 麦克风按钮：一次请求完成录音 + 识别 + 回答 */
@@ -954,6 +1042,8 @@ function poll(){
         else if (ev.type === 'heard') { onHeard(ev); }
         else if (ev.type === 'partial') { onPartial(ev); }
         else if (ev.type === 'turn') { showTurn(ev); }
+        else if (ev.type === 'card') { onCard(ev); }
+        else if (ev.type === 'alarm') { onAlarm(ev); }
         else if (ev.type === 'toast') { toast(ev.text); }
         else if (ev.type === 'mode') { onMode(ev); }
       } catch (e) {
