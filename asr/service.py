@@ -534,7 +534,10 @@ def _record_once(max_sec, min_sec, silence, thresh, min_after_voice=None):
         seen = sz
         arr = array.array("h")
         arr.frombytes(chunk[:len(chunk) // 2 * 2])
-        pk = max((abs(v) for v in arr[0::4]), default=0)
+        # 四声道里任一声道有声就算有人说话。原来只取 arr[0::4]（第 0 声道），
+        # 实测同一句话有时录 1.7s 有时 3.3s —— 人声落在别的声道时第 0 声道
+        # 峰值低，被误判静音提前截断（「告诉我为什么…」只剩「告诉我」）。
+        pk = max((abs(v) for v in arr), default=0)
         now = time.time()
         if pk > thresh:
             if not started:
@@ -1748,6 +1751,13 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
         pcm, peak = finish(raw, nch)
         log("turn 录音 %.2fs silence=%.2f peak=%d"
             % (rec_dt, silence, peak))
+        # 诊断：每轮混合后的录音落盘（覆盖上一轮）。识别错了能回放定位。
+        try:
+            with open(os.path.join(BASE, "turn_last.wav"), "wb") as _f:
+                _f.write(_wav_hdr(len(pcm) * 2, 1))
+                _f.write(pcm.tobytes())
+        except OSError:
+            pass
         txt = ""
         if peak >= 700:          # 实测底噪峰值 ~450，太低就是没人说话
             txt, dt, conf = asr_decode(pcm)
