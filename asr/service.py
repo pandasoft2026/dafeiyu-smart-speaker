@@ -896,6 +896,11 @@ def _strict_wake_hit(t):
         i = t.find(w)
         if i < 0:
             continue
+        # 误唤醒修复：只认「唤醒词在句首」。环境噪音累积出的
+        # 「大你好肥鱼」含「你好肥鱼」但不是真喊，前面有杂字就是噪音。
+        # 白名单本身已含「你好/您好/大」等前缀，所以 i==0 不漏真唤醒。
+        if i != 0:
+            continue
         who = "sage" if ("圣" in w or "良" in w) else "fish"
         if i + len(w) > best_end:
             best_end, best_who = i + len(w), who
@@ -1042,6 +1047,7 @@ def stream_wake(rec, lib, max_sec=90):
     n_gate = 0        # 统计：真正送进 Vosk 的采样点数
     fed_gate = 0      # 本次开闸喂进去的采样点数
     gate_peak = 0     # 本次开闸期间的最大响度（混音后）
+    gate_t0 = 0.0     # 本次开闸起始时刻：限时 4s，防止噪音让闸一直开着拼出唤醒词
     GATE_FLOOR = WAKE_GATE_FLOOR[0]
     thr = GATE_FLOOR
     # 诊断用：闲置块峰值落在哪个区间，用来校准门限（WAKE_DEBUG 时打印）
@@ -1124,6 +1130,7 @@ def stream_wake(rec, lib, max_sec=90):
                 quiet = 0.0
                 fed_gate = 0
                 gate_peak = 0
+                gate_t0 = now             # 记开闸时刻，下面限时强制关闸
                 flush_pre = True          # 等这一块的响度算完再补预卷
                 if WAKE_DEBUG:
                     log("wake 开闸 pk=%d nf=%.0f" % (rpk, nf))
@@ -1164,12 +1171,18 @@ def stream_wake(rec, lib, max_sec=90):
             # 实测 20% 音量下 TTS/人声念「召唤大肥鱼」，"大肥"峰值 893 刚过线，
             # "鱼"字轻一点就掉到 500 上下，于是被判成静音、0.9 秒后关闸，
             # 结果只认出「召唤大肥」，整句白费。400 这条线只用来续命，不放闸。
-            if pk <= thr * 0.5:
+            #
+            # 误唤醒修复（2026-11-27）：环境持续有声时 pk 一直高于 thr*0.5，
+            # 根本不进下面的静音关闸分支，闸能开 30 秒；Vosk 的 partial 跨
+            # 30 秒累积「大」→「大你好肥」→「大你好肥鱼」，最后拼出唤醒词
+            # 误触发。真人喊唤醒词 <3s，所以开闸满 4s 无条件强制关闸。
+            gate_timeout = bool(gate_t0) and (now - gate_t0) > 4.0
+            if pk <= thr * 0.5 or gate_timeout:
                 quiet += len(arr) / SR
                 # 1.2s→1.6s：PC 回环实测 Vosk 终稿总慢半拍（「肥鱼肥鱼」
                 # 只吐到「肥鱼肥」就关闸），延长 0.4s 让它把最后一字吐完。
                 # 参考 home-mate 实测：句中停顿 350-500ms 需要保留，1.6s 仍够安全。
-                if quiet > 1.6:           # 说完就关闸并清空，残字不会攒着
+                if quiet > 1.6 or gate_timeout:   # 说完 or 超时，关闸清空
                     gate = False
                     # 分片结果会在最后一个字之前停住（"肥鱼肥"），真正的终稿要
                     # 从 final_result 拿。先判终稿，再 reset。
@@ -1179,7 +1192,7 @@ def stream_wake(rec, lib, max_sec=90):
                         fin = fix_text(d.get("text", "").replace(" ", "").replace("[unk]", ""))
                     except Exception:
                         pass
-                    if fin and len(fin) >= 2 and gate_peak >= 800 and fin != last_part:
+                    if fin and 2 <= len(fin) <= 12 and gate_peak >= 1200 and fin != last_part:
                         if WAKE_DEBUG:
                             log("wake 终稿 %r pk=%d" % (fin, gate_peak))
                         rr = handle_wake_text(fin)
@@ -1241,8 +1254,11 @@ def stream_wake(rec, lib, max_sec=90):
                             f.write(raw)
                     except OSError:
                         pass
-            # 只有真的有人说话（近一秒够响）时才认这句话，避免噪音瞎猜出唤醒词
-            if part and len(part) >= 2 and gate_peak >= 800:
+            # 只有真的有人说话（近一秒够响）时才认这句话，避免噪音瞎猜出唤醒词。
+            # 误唤醒修复：Vosk 的 partial 是「开闸以来累积的全部文字」，环境
+            # 吵时跨几十秒能攒出「大你好肥鱼」这种包含唤醒词的串。唤醒词最长
+            # 5 字（你好大肥鱼），part 超过 12 字必是噪音累积，直接不认。
+            if part and 2 <= len(part) <= 12 and gate_peak >= 1200:
                 r = handle_wake_text(part)
                 if r:
                     result = r
