@@ -109,8 +109,10 @@ def push_event(ev):
 # 实测 60 条才 2MB，写放大可忽略（真正的大头是录音，仍留在 /dev）。
 # ---------------------------------------------------------------------------
 TTS_DIR = os.path.join(BASE, "tts_cache")
-TTS_VOICE = {"fish": "zh-CN-XiaoyiNeural", "sage": "zh-CN-YunyangNeural"}
-TTS_TUNE = {"fish": (28, 4), "sage": (-10, -6)}     # (pitch 加多少 Hz, rate 加多少 %)
+# 梁圣改用云健（Yunjian）：云扬是新闻播报腔偏年轻，云健低沉浑厚更像武将。
+# pitch 再压低、语速放慢，进一步增加压迫感。
+TTS_VOICE = {"fish": "zh-CN-XiaoyiNeural", "sage": "zh-CN-YunjianNeural"}
+TTS_TUNE = {"fish": (28, 4), "sage": (-18, -10)}    # (pitch 加多少 Hz, rate 加多少 %)
 TTS_CACHE_MAX = 60                                  # 最多留 60 条
 TTS_CACHE_BYTES = 16 << 20                          # 或者 16MB，谁先到算谁
 TTS_TEXT_MAX = 600                                  # 单次合成的字数上限
@@ -270,8 +272,8 @@ TTS_PHRASES = [
      "zh-CN-XiaoyiNeural", 28, 4),
     ("大肥鱼回来啦～想我了吗？",
      "zh-CN-XiaoyiNeural", 28, 4),
-    ("梁圣已上线。有事直说。",
-     "zh-CN-YunyangNeural", -10, -6),
+    ("梁圣已上线。",
+     "zh-CN-YunjianNeural", -18, -10),
 ]
 
 
