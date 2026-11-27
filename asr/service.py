@@ -767,6 +767,9 @@ SHENG = "圣胜生声盛升性兴星姓省"
 
 FISH_PAIRS = tuple(a + b for a in FEI for b in YU)
 SAGE_PAIRS = tuple(a + b for a in LIANG for b in SHENG)
+# 实测 Vosk 把「切换到梁圣」听成「切换到粮食」（shèng→shí），
+# 「食」不在 SHENG 近音表里，导致切人设失效。单独补这个组合。
+SAGE_PAIRS += ("粮食", "两食", "凉食")
 NAME_WORDS = FISH_PAIRS + SAGE_PAIRS + ("大肥鱼",)
 
 # 「召唤」本身也常被听错，一并容错
@@ -1433,8 +1436,10 @@ def wake_loop():
             else:
                 # 只喊了名字，服务端接着把这句话听完，不再让前端来回跑
                 # 等提示音「叮」播完再开录（前端收到事件后立刻响），
-                # 顺便等 tinycap 把麦克风彻底放开
-                time.sleep(0.55)
+                # 顺便等 tinycap 把麦克风彻底放开。
+                # 0.55→0.25：实测用户连着说「肥鱼肥鱼，讲个笑话」，
+                # 等 0.55s 再录时问题已说完，只捕到尾音「啊」。
+                time.sleep(0.25)
                 # 唤醒后只喊了名字这一路：
                 #   min_sec=2.2 保留作为「一直不说话」时的最长耐心；
                 #   但一旦开始说话，min_after_voice=0.5 就让判停立刻生效，
@@ -1799,7 +1804,10 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
                 # 的尾音被听岔），一路发给了 DeepSeek 自问自答。所以既要求够长
                 # （≥4 字），也要求语速像人话（≥2.2 字/秒），响度再抬到 1200。
                 rate = len(ptxt) / max(0.2, pdt)
-                good = (pdt >= 1.2 and 2.2 <= rate <= 9.0 and len(ptxt) >= 4
+                # 门槛放宽（2026-11-27）：原 len>=4/rate>=2.2 太严，
+                # 「讲个笑话」这种短问句被挡掉，turn 只剩「啊」。
+                # 放宽到 len>=2/rate>=1.5，仍要求响度>=1200 挡噪音。
+                good = (pdt >= 0.8 and 1.5 <= rate <= 9.0 and len(ptxt) >= 2
                         and ppeak >= 1200)
                 log("turn 回看唤醒前 peak=%d conf=%.2f %.2fs %.2f字/秒 -> %r %s (%.1fs)"
                     % (ppeak, pconf, pdt, rate, ptxt,
@@ -1809,6 +1817,26 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
             except Exception:
                 log("turn 回看失败", traceback.format_exc()[-200:])
 
+        if len(txt) < 2:
+            # 短结果兜底重试（2026-11-27）：实测 112 条 turn 里 27 条(24%)是
+            # ≤2字残句，多为「唤醒后说话时序」导致第一遍只捕到尾音。
+            # 再录一次（用户常会补说/重复），仍不行才放弃。
+            if from_wake:
+                log("turn 短结果 %r，重试一次" % txt)
+                try:
+                    with _lock:
+                        raw2, nch2 = record(3.5, min_sec=1.2, silence=0.5,
+                                            min_after_voice=0.8)
+                    if raw2:
+                        pcm2, peak2 = finish(raw2, nch2)
+                        if peak2 >= 700:
+                            txt2, dt2, conf2 = asr_decode(pcm2)
+                            txt2 = (txt2 or "").strip()
+                            log("turn 重试 -> %r peak=%d (%.2fs)" % (txt2, peak2, dt2))
+                            if len(txt2) > len(txt):
+                                txt = txt2
+                except Exception:
+                    log("turn 重试失败", traceback.format_exc()[-160:])
         if len(txt) < 2:
             ev = {"type": "turn", "q": "", "answer": ""}
             if notify:

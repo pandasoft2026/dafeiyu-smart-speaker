@@ -377,7 +377,7 @@
 console.log('UI v4 build 1120-u');
 var API = 'http://127.0.0.1:8899';
 var TTS = 'http://127.0.0.1:8899/api/tts';            // 音箱本地合成，不依赖电脑
-var TTS_FALLBACK = 'http://${PC_IP:-192.168.1.2}:8900/tts';   // 本地挂了才用电脑兜底
+var TTS_FALLBACK = 'http://192.168.137.1:8900/tts';   // 本地挂了才用电脑兜底
 var DESIGN_W = 1280, DESIGN_H = 800;
 
 /* 两套人设：语音、头像、文案 */
@@ -843,15 +843,18 @@ function showTurn(ev){
   lastQ = '';
   var ans = ev.answer || '嗯…我没想好';
   chatHist.push({role:'assistant', content: ans});
-  var b = addRow('ai', '');
-  if (ev.streamed) {
-    // 流式路径：句子已经逐句播了，这里只负责收尾
+  if (ev.streamed && window.__streamAiRow) {
+    // 流式路径：partial 已经建了气泡并逐句填字，这里**复用同一个气泡**补全。
+    // 原来这里又 addRow 建一个新气泡再 typeOut，答案就显示两遍（实测用户反馈）。
+    var b = window.__streamAiRow;
     window.__streamAiRow = null;
+    b.textContent = ans;          // 直接补全文（partial 可能少最后一句）
     streamEnd();
-    typeOut(b, ans, function(){ setStatus(''); });
+    setStatus('');
   } else {
+    var b2 = addRow('ai', '');
     speak(ans);
-    typeOut(b, ans, function(){ setStatus(''); });
+    typeOut(b2, ans, function(){ setStatus(''); });
   }
   refreshUsage(false);   // 对话结束刷新一次用量/余额
 }
