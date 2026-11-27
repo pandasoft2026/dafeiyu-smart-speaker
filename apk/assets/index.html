@@ -377,7 +377,6 @@
 console.log('UI v4 build 1120-u');
 var API = 'http://127.0.0.1:8899';
 var TTS = 'http://127.0.0.1:8899/api/tts';            // 音箱本地合成，不依赖电脑
-var TTS_FALLBACK = 'http://192.168.137.1:8900/tts';   // 本地挂了才用电脑兜底
 var DESIGN_W = 1280, DESIGN_H = 800;
 
 /* 两套人设：语音、头像、文案 */
@@ -624,15 +623,10 @@ function playSegments(segs, seq){
     el.onerror = function(){
       if (seq !== speakSeq || adv) return;
       adv = true;
-      if (base === TTS && TTS_FALLBACK){
-        console.warn('tts 本地失败，改用电脑兜底');
-        base = TTS_FALLBACK;
-        build();
-        step(0);
-      } else {
-        console.warn('tts 这句失败，跳过');
-        step(k + 1);
-      }
+      // 原来这里会 fallback 到 PC 的 8900 端口，但那个服务早不用了，
+      // 失败时只会白等超时。服务端已有换连接重试，这里直接跳过即可。
+      console.warn('tts 这句失败，跳过');
+      step(k + 1);
     };
     el.play().catch(function(e){
       console.warn('play blocked', e);
