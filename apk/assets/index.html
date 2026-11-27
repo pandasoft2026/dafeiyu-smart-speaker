@@ -37,22 +37,26 @@
 
   /* 顶栏：上层品牌状态行 + 下层行情条 */
   .top {
-    height:170px; flex:0 0 170px; display:flex; flex-direction:column;
+    height:140px; flex:0 0 140px; display:flex; flex-direction:column;
     padding:6px 32px 6px;
   }
   .top-row { display:flex; align-items:center; gap:13px; height:52px; flex:0 0 52px; }
 
-  /* 行情条：2 行 × 6 列，字号不小于状态 chip 的 18px */
+  /* 行情条：只留 4 个关键指标，1 行 4 列，字号不小于状态 chip 的 18px */
   .market-bar {
-    flex:1 1 auto; display:grid; grid-template-columns:repeat(6, 1fr);
-    grid-template-rows:repeat(2, 1fr); column-gap:6px; row-gap:1px;
-    align-items:center;
+    flex:1 1 auto; display:grid; grid-template-columns:repeat(4, 1fr);
+    grid-template-rows:1fr; column-gap:6px; align-items:center;
   }
   .mkt {
     display:flex; align-items:baseline; gap:6px; white-space:nowrap;
     font-size:18px; font-weight:800; color:#335F7E; line-height:1.15;
   }
-  .mkt .n { color:#7298B5; font-size:18px; }
+  /* 四个指标名字各自一色，扫一眼就能分清 */
+  .mkt .n { font-size:18px; }
+  .mkt.k0 .n { color:#1F6FB8; }   /* 上证-蓝 */
+  .mkt.k1 .n { color:#7B4FC0; }   /* 创业板-紫 */
+  .mkt.k2 .n { color:#0E8A86; }   /* 纳指-青 */
+  .mkt.k3 .n { color:#C08218; }   /* 沪金-金 */
   .mkt .p { color:#123F61; font-variant-numeric:tabular-nums; }
   .mkt .c { font-size:18px; font-variant-numeric:tabular-nums; }
   .mkt .up { color:#D8403B; }     /* 涨=红（A股习惯） */
@@ -64,7 +68,7 @@
   /* 五天预报条 */
   .weather-bar {
     flex:0 0 34px; height:34px; display:flex; align-items:center;
-    gap:0; border-top:1px solid rgba(46,155,240,.10); margin-top:2px;
+    gap:0;   /* 紧贴行情条：不要分隔线/空行 */
   }
   .wday {
     flex:1; display:flex; align-items:center; justify-content:center; gap:7px;
@@ -214,6 +218,20 @@
   .sage .logo { border-radius:50%; box-shadow:0 0 0 1px rgba(216,178,106,.55), 0 8px 20px rgba(0,0,0,.55); }
   .sage .chip { background:rgba(9,18,30,.62); border-color:rgba(216,178,106,.30); color:#E7D6AC; box-shadow:none; }
   .sage .clock { color:#E6EEF7; text-shadow:0 3px 14px rgba(0,0,0,.6); }
+  /* 行情/天气条：深色背景上要用浅字，否则深蓝字和背景糊在一起 */
+  .sage .mkt .p { color:#EAF2FA; text-shadow:0 2px 8px rgba(0,0,0,.6); }
+  .sage .mkt.k0 .n { color:#7EC4FF; }
+  .sage .mkt.k1 .n { color:#C4A2FF; }
+  .sage .mkt.k2 .n { color:#5FE0D8; }
+  .sage .mkt.k3 .n { color:#F0C45E; }
+  .sage .mkt .up { color:#FF8A84; }
+  .sage .mkt .down { color:#5FDDA8; }
+  .sage .mkt .flat { color:#94A9BC; }
+  .sage .weather-bar .wday { color:#C6D6E6; }
+  .sage .weather-bar .wd { color:#D9C184; }
+  .sage .weather-bar .wt { color:#E8C579; }
+  .sage .weather-bar .wn { color:#EAF2FA; }
+  .sage .weather-bar .today .wd { color:#F5CE6E; }
   .sage .row.ai .bubble {
     background:rgba(250,252,255,.95); color:#0B1B2B;
     border:1px solid rgba(255,255,255,.55); box-shadow:0 14px 30px rgba(0,0,0,.45);
@@ -1078,18 +1096,27 @@ function makeMktNode(isWeather){
   d.appendChild(n); d.appendChild(p); d.appendChild(c);
   return {el:d, n:n, p:p, c:c};
 }
+// 只显示这 4 个关键指标（顺序即颜色顺序 k0~k3）
+var MKT_KEEP = ['上证', '创业板', '纳指', '沪金'];
 function renderMarket(d){
   var bar = document.getElementById('marketBar');
   if (!bar || !d) return;
-  var list = d.market || [];
-  // 行情条固定 12 格（2行×6列）；天气单独放在顶行
-  var total = list.length;
-  while (mktNodes.length < total) {
+  // 按白名单挑，取不到就留空位显示「—」，不编造
+  var all = d.market || [], list = [];
+  for (var k = 0; k < MKT_KEEP.length; k++) {
+    var found = null;
+    for (var j = 0; j < all.length; j++) {
+      if (all[j].name === MKT_KEEP[k]) { found = all[j]; break; }
+    }
+    list.push(found || {name: MKT_KEEP[k], price: null, pct: null});
+  }
+  while (mktNodes.length < list.length) {
     var nd = makeMktNode(false);
     mktNodes.push(nd); bar.appendChild(nd.el);
   }
   for (var i = 0; i < list.length; i++) {
     var it = list[i], nd = mktNodes[i];
+    nd.el.className = 'mkt k' + i;
     nd.n.textContent = it.name;
     nd.p.textContent = fmtPx(it.price);
     nd.c.textContent = fmtPct(it.pct);
