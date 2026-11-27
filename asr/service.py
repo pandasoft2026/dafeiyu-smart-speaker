@@ -1568,13 +1568,23 @@ def load_key():
 
 
 def _weather_context():
-    """把当前天气塞进 system prompt，让「今天天气怎么样」有数据可答。
-    复用 market.py 的缓存（天气 10min），不会每次对话都去抓接口。"""
+    """把天气 + 当前时间塞进 system prompt，让「今天天气」「现在几点」都有数据可答。
+    天气复用 market.py 缓存（10min）；时间取设备本地时钟，绝不编造。"""
+    # 时间：设备可能有 RTC 偏差，但总比大模型「我这儿没时钟」强
+    try:
+        _now = time.localtime()
+        _time_ctx = ("\n\n【当前时间】%d年%d月%d日 %s %02d:%02d。"
+                     "问现在几点/今天几号/星期几就按这个答，别说看不到时钟。"
+                     % (_now.tm_year, _now.tm_mon, _now.tm_mday,
+                        "星期" + "一二三四五六日"[_now.tm_wday],
+                        _now.tm_hour, _now.tm_min))
+    except Exception:
+        _time_ctx = ""
     try:
         import market as _mk
         d = _mk.get_dashboard().get("weather") or {}
         if d.get("temp") is None:
-            return ""
+            return _time_ctx
         days = d.get("days") or []
         today = days[0] if days else {}
         forecast = "；".join(
@@ -1582,13 +1592,14 @@ def _weather_context():
                               round(x["lo"]) if x.get("lo") is not None else "?",
                               round(x["hi"]) if x.get("hi") is not None else "?")
             for x in days[:5])
-        return ("\n\n【实时信息，回答天气问题时要用到】地点：%s；当前 %s°C %s；"
+        return (_time_ctx +
+                "\n\n【实时信息，回答天气问题时要用到】地点：%s；当前 %s°C %s；"
                 "未来五天：%s。这是真实数据，别再说「我看不到天气」，"
                 "问哪天就按上面哪天答，别自己编。"
                 % (d.get("city", "成都"), round(d["temp"]), d.get("desc", ""),
                    forecast or "暂无"))
     except Exception:
-        return ""
+        return _time_ctx
 
 
 def ask_deepseek(text, history=None):
