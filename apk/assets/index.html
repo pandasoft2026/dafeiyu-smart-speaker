@@ -392,8 +392,8 @@ var P = {
     name: '梁圣', title: '梁圣', sub: 'DEEPSEEK · 本源', av: 'avatar_sage.png',
     voice: 'zh-CN-YunjianNeural', pitch: -22, rate: -18,
     hint: '点一下 <b>麦克风</b>，说重点',
-    hello: '梁圣在此。',
-    back: '梁圣在此。'
+    hello: '本座在此。',
+    back: '本座在此。'
   }
 };
 
@@ -739,7 +739,7 @@ function applyMode(m, announce){
     stopSpeak();
     chat.innerHTML = '';
     chatHist = [];
-    addSys(m === 'sage' ? '梁圣 在此' : '大肥鱼 已上线');
+    addSys(m === 'sage' ? '本座 在此' : '大肥鱼 已上线');
     var hi = (m === 'sage') ? p.hello : p.back;
     addRow('ai', hi);
     setTimeout(function(){ speak(hi); }, 260);

@@ -110,7 +110,7 @@ def push_event(ev):
 # ---------------------------------------------------------------------------
 TTS_DIR = os.path.join(BASE, "tts_cache")
 # 梁圣改用云健（Yunjian）：云扬是新闻播报腔偏年轻，云健低沉浑厚更像武将。
-# pitch 压到 -22、语速放慢到 -18%，让「梁圣在此」有亮相般的拖长压迫感。
+# pitch 压到 -22、语速放慢到 -18%，让「本座在此」有亮相般的拖长压迫感。
 TTS_VOICE = {"fish": "zh-CN-XiaoyiNeural", "sage": "zh-CN-YunjianNeural"}
 TTS_TUNE = {"fish": (28, 4), "sage": (-22, -18)}    # (pitch 加多少 Hz, rate 加多少 %)
 TTS_CACHE_MAX = 60                                  # 最多留 60 条
@@ -272,7 +272,7 @@ TTS_PHRASES = [
      "zh-CN-XiaoyiNeural", 28, 4),
     ("大肥鱼回来啦～想我了吗？",
      "zh-CN-XiaoyiNeural", 28, 4),
-    ("梁圣在此。",
+    ("本座在此。",
      "zh-CN-YunjianNeural", -22, -18),
 ]
 
@@ -834,6 +834,17 @@ def _has_sage(t):
     return any(p in t for p in SAGE_PAIRS)
 
 
+def _has_sage_single(t):
+    """单字 sage 兜底：只在「切换/召唤」语境里用，避免正常句子误判。
+    实测 Vosk 把「切换到梁圣」听成「切换到省」，声母丢了只剩尾字，
+    双字组合匹配不上。有明确切换词时，单个「圣/省/胜」只能是梁圣。"""
+    return any(c in t for c in _SAGE_TAIL)
+
+
+def _has_fish_single(t):
+    return any(c in t for c in _FISH_TAIL)
+
+
 def _strip_name(t):
     for w in sorted(NAME_WORDS, key=len, reverse=True):
         t = t.replace(w, "")
@@ -927,6 +938,9 @@ def classify_wake(t):
     # 切人设：只在明确的「召唤/切换 + 名字」时才切，不拾音。
     if any(w in t2 for w in SWITCH_WORDS):
         hf, hs = _has_fish(t2), _has_sage(t2)
+        # 双字没匹配上时，用单字尾字兜底（Vosk 常把「梁圣」听成单字「省」）
+        if not (hf or hs):
+            hs, hf = _has_sage_single(t2), _has_fish_single(t2)
         if hf or hs:
             return ("mode", "sage" if (hs and not hf) else "fish", "")
         return ("reject", None, "")
@@ -1860,6 +1874,13 @@ def do_turn(notify=True, max_sec=6.0, min_sec=1.0,
         # 「召唤良性」，精确匹配对不上，那句话就被当成问题发给 DeepSeek 了。
         if len(txt) <= 12:
             who = _name_of(txt)
+            # 单字尾字兜底：只对「切换/召唤」语境生效，避免误判普通句子
+            if not who and any(w in txt for w in SWITCH_WORDS):
+                hs, hf = _has_sage_single(txt), _has_fish_single(txt)
+                if hs and not hf:
+                    who = "sage"
+                elif hf and not hs:
+                    who = "fish"
             if who and (any(w in txt for w in SWITCH_WORDS) or len(txt) <= 6):
                 set_mode(who)
                 return {"type": "mode", "mode": who}
