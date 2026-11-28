@@ -1794,9 +1794,9 @@ def answer_question(q, notify=True):
             ev = {"type": "turn", "q": q, "answer": ans or "",
                   "mode": STATE["mode"], "streamed": 1 if ans else 0}
             if pr.get("card"):
+                # 只放在 turn 事件里，不要再单独推一个 card 事件：
+                # 前端 showTurn 见到 ev.card 就会渲染，独立事件会让它画两遍。
                 ev["card"] = pr["card"]
-                if notify:
-                    push_event({"type": "card", "card": pr["card"]})
             if notify:
                 push_event(ev)
             return ev
