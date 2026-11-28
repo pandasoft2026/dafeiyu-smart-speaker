@@ -19,6 +19,16 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 BASE = "/data/local/tmp/voicebot"
+
+# 集中配置：所有可调项从 config.json 读，缺省用 DEFAULTS。
+# 这里先加载一次，运行时改配置后由 apply_config() 热更新到各全局量。
+try:
+    import settings as _cfgmod
+    CFG = _cfgmod.load()
+except Exception:
+    _cfgmod = None
+    CFG = {}
+
 # 录音落盘一律走 /dev（tmpfs，内存里）。tinycap 是 128KB/s 连续写入，
 # 放在 /data 上是 11GB/天的 flash 写放大，一年就能把 eMMC 磨穿。
 # /dev 是 tmpfs，写它等于写内存，零磨损，而且读写都更快。
@@ -38,20 +48,15 @@ API_KEY_FILE = os.path.join(BASE, "api_key.conf")
 
 # 语音播报场景：回答越短，TTS 越快、用户等得越少。对齐智能音箱体感——
 # 一句话给结论，20 字以内，不铺垫、不重复用户问题、不讲三段式。
-PROMPTS = {
-    "fish": (
-        "你是“大肥鱼”，一只软萌爱撒娇的小鲸鱼助手。用口语化短句回答，带一点撒娇。"
-        "严格规则：只说一句话，20 字以内，直接给答案，不要铺垫和复述问题，不解释过程。"
-        "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
-        "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。"
-    ),
-    "sage": (
-        "你是“梁圣”，一位气场很强的技术型老板。说话简洁克制、直接给判断，不寒暄不卖萌。"
-        "严格规则：只说一句话，20 字以内，先给结论，不解释过程。"
-        "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
-        "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。"
-    ),
-}
+_DFISH = ("你是“大肥鱼”，一只软萌爱撒娇的小鲸鱼助手。用口语化短句回答，带一点撒娇。"
+          "严格规则：只说一句话，20 字以内，直接给答案，不要铺垫和复述问题，不解释过程。"
+          "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
+          "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。")
+_DSAGE = ("你是“梁圣”，一位气场很强的技术型老板。说话简洁克制、直接给判断，不寒暄不卖萌。"
+          "严格规则：只说一句话，20 字以内，先给结论，不解释过程。"
+          "用户让你讲故事/笑话/创作时可以到 40 字，要真的讲出来、别拒绝。"
+          "这是语音播报，用户听完就要走。禁止 Markdown、表情、列表、引号。")
+PROMPTS = {"fish": _cfg("prompts", "fish", _DFISH), "sage": _cfg("prompts", "sage", _DSAGE)}
 
 STATE = {"mode": "fish", "busy": False, "wake": True}
 EVENTS = []
@@ -59,7 +64,7 @@ EVENTS = []
 # 这台固件没有 SystemUI，系统的 screen_off_timeout 走到"做梦"这一步就没人接手，
 # 试过 15 秒超时也不熄屏（mUserActivitySummary 在 0x4/0x1 之间反复）。所以自己算：
 # 界面每次真的有人碰（点击、音量键）或者有人跟它说话，就刷新时间戳。
-IDLE_OFF = 600.0          # 秒；10 分钟
+IDLE_OFF = float(_cfg("ui", "idle_off_sec", 600))   # 秒；10 分钟
 _last_act = time.time()
 EV_LOCK = threading.Condition()   # 既当锁用，也能让长轮询挂在这里等事件
 _lock = threading.Lock()
@@ -70,7 +75,7 @@ BUILD = "b1120-78"
 LIVE_PEAK = {"max": 0, "at": 0.0}
 # 开闸门限：默认 800（真人对着喊 peak 2000+）。PC 喇叭回环测试时可临时调低，
 # 测完必须恢复——这是诊断旋钮，不是生产默认值。
-WAKE_GATE_FLOOR = [800.0]
+WAKE_GATE_FLOOR = [float(_cfg("asr", "gate_floor", 800))]
 
 FIX = [("肥腴", "肥鱼"), ("肥于", "肥鱼"), ("飞鱼", "肥鱼"), ("菲鱼", "肥鱼"),
        ("梁生", "梁圣"), ("良圣", "梁圣"), ("梁胜", "梁圣"), ("凉圣", "梁圣")]
@@ -109,13 +114,24 @@ def push_event(ev):
 # 实测 60 条才 2MB，写放大可忽略（真正的大头是录音，仍留在 /dev）。
 # ---------------------------------------------------------------------------
 TTS_DIR = os.path.join(BASE, "tts_cache")
-# 梁圣改用云健（Yunjian）：云扬是新闻播报腔偏年轻，云健低沉浑厚更像武将。
-# pitch 压到 -22、语速放慢到 -18%，让「本座在此」有亮相般的拖长压迫感。
-TTS_VOICE = {"fish": "zh-CN-XiaoyiNeural", "sage": "zh-CN-YunjianNeural"}
-TTS_TUNE = {"fish": (28, 4), "sage": (-22, -18)}    # (pitch 加多少 Hz, rate 加多少 %)
-TTS_CACHE_MAX = 60                                  # 最多留 60 条
+
+
+def _cfg(section, key, default):
+    return CFG.get(section, {}).get(key, default)
+
+
+# 音色/音调/语速可在控制中心改；默认保持已验证的搭配。
+TTS_VOICE = {
+    "fish": _cfg("tts", "voice_fish", "zh-CN-XiaoyiNeural"),
+    "sage": _cfg("tts", "voice_sage", "zh-CN-YunjianNeural"),
+}
+TTS_TUNE = {
+    "fish": (_cfg("tts", "pitch_fish", 28), _cfg("tts", "rate_fish", 4)),
+    "sage": (_cfg("tts", "pitch_sage", -22), _cfg("tts", "rate_sage", -18)),
+}
+TTS_CACHE_MAX = _cfg("tts", "cache_max", 60)        # 最多留 60 条
 TTS_CACHE_BYTES = 16 << 20                          # 或者 16MB，谁先到算谁
-TTS_TEXT_MAX = 600                                  # 单次合成的字数上限
+TTS_TEXT_MAX = _cfg("tts", "text_max", 600)         # 单次合成的字数上限
 _tts_locks = {}
 _tts_lk = threading.Lock()
 _tts_stat = {"hit": 0, "miss": 0, "err": 0}
@@ -1496,7 +1512,71 @@ USAGE = {"calls": 0, "prompt": 0, "completion": 0, "total": 0,
          "errors": 0, "last_at": 0.0, "started_at": time.time()}
 BALANCE = {"value": None, "currency": "CNY", "at": 0.0, "err": ""}
 BALANCE_TTL = 300.0          # 余额缓存 5 分钟
-LLM_MODEL = "deepseek-chat"
+LLM_MODEL = _cfg("llm", "model", "deepseek-chat")
+
+
+def _llm_conf():
+    """返回 (key, base_url, chat_path, model, timeout)。控制中心改完即时生效。"""
+    c = CFG.get("llm", {})
+    key = (c.get("api_key") or "").strip() or load_key()
+    base = (c.get("base_url") or "https://api.deepseek.com").rstrip("/")
+    path = c.get("chat_path") or "/chat/completions"
+    if not path.startswith("/"):
+        path = "/" + path
+    model = c.get("model") or LLM_MODEL
+    timeout = float(c.get("timeout") or 20)
+    return key, base, path, model, timeout
+
+
+def _llm_temperature():
+    return (CFG.get("llm", {}).get("temperature_%s" % STATE["mode"])
+            or (0.4 if STATE["mode"] == "sage" else 0.7))
+
+
+def _llm_max_tokens():
+    return int(CFG.get("llm", {}).get("max_tokens") or 120)
+
+
+def apply_config():
+    """控制中心保存配置后调用：把磁盘配置热更新到各全局量，无需重启服务。"""
+    global CFG, PROMPTS, IDLE_OFF, LLM_MODEL, TTS_CACHE_MAX, TTS_TEXT_MAX
+    if not _cfgmod:
+        return False
+    CFG = _cfgmod.load()
+    PROMPTS = {
+        "fish": CFG.get("prompts", {}).get("fish", _DFISH),
+        "sage": CFG.get("prompts", {}).get("sage", _DSAGE),
+    }
+    LLM_MODEL = CFG.get("llm", {}).get("model", "deepseek-chat")
+    IDLE_OFF = float(CFG.get("ui", {}).get("idle_off_sec", 600))
+    TTS_CACHE_MAX = int(CFG.get("tts", {}).get("cache_max", 60))
+    TTS_TEXT_MAX = int(CFG.get("tts", {}).get("text_max", 600))
+    TTS_VOICE.update({
+        "fish": CFG.get("tts", {}).get("voice_fish", TTS_VOICE["fish"]),
+        "sage": CFG.get("tts", {}).get("voice_sage", TTS_VOICE["sage"]),
+    })
+    TTS_TUNE.update({
+        "fish": (CFG.get("tts", {}).get("pitch_fish", TTS_TUNE["fish"][0]),
+                 CFG.get("tts", {}).get("rate_fish", TTS_TUNE["fish"][1])),
+        "sage": (CFG.get("tts", {}).get("pitch_sage", TTS_TUNE["sage"][0]),
+                 CFG.get("tts", {}).get("rate_sage", TTS_TUNE["sage"][1])),
+    })
+    WAKE_GATE_FLOOR[0] = float(CFG.get("asr", {}).get("gate_floor", 800))
+    _wake_on = bool(CFG.get("scene", {}).get("wake_enabled", True))
+    STATE["wake"] = _wake_on
+    STATE["wake_off_at"] = 0.0 if _wake_on else time.time()
+    touch_activity()
+    # 音量
+    try:
+        vol = int(CFG.get("scene", {}).get("volume_music", 8))
+        subprocess.run(["media", "volume", "--stream", "3", "--set", str(vol)],
+                       capture_output=True)
+    except Exception:
+        pass
+    log("config 已热更新")
+    return True
+
+
 GITHUB_REPO = "pandasoft2026/dafeiyu-smart-speaker"
 GH_STARS = {"count": None, "at": 0.0, "err": ""}
 GH_STARS_TTL = 1800.0        # star 变化慢，缓存 30 分钟
@@ -1636,24 +1716,24 @@ def _weather_context():
 
 
 def ask_deepseek(text, history=None):
-    key = load_key()
+    key, base, path, model, timeout = _llm_conf()
     if not key:
         return "（还没配置接口密钥）"
     msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"]) + _weather_context()}]
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
-    body = json.dumps({"model": LLM_MODEL, "messages": msgs,
-                       "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
-                       "max_tokens": 120}).encode()
-    req = Request("https://api.deepseek.com/chat/completions", data=body,
+    body = json.dumps({"model": model, "messages": msgs,
+                       "temperature": _llm_temperature(),
+                       "max_tokens": _llm_max_tokens()}).encode()
+    req = Request(base + path, data=body,
                   headers={"Content-Type": "application/json",
                            "Authorization": "Bearer " + key})
     t0 = time.time()
     try:
         # 20 秒够 DeepSeek 正常回一轮了（实测 0.9~2 秒）。原来给 40 秒，
         # 断网或信号差的时候用户要干等半分钟，看着就像死机。
-        with urlopen(req, timeout=20) as r:
+        with urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read().decode())
         _record_usage(d.get("usage"))
         ans = d["choices"][0]["message"]["content"].strip()
@@ -1700,19 +1780,19 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
     on_sentence(sentence, idx) 里可以立刻推事件让前端开播。
     失败时回退到非流式 ask_deepseek，保证有答案。
     """
-    key = load_key()
+    key, base, path, model, timeout = _llm_conf()
     if not key:
         return "（还没配置接口密钥）", 0.0, 0.0
     msgs = [{"role": "system", "content": PROMPTS.get(STATE["mode"], PROMPTS["fish"]) + _weather_context()}]
     if history:
         msgs.extend(history[-6:])
     msgs.append({"role": "user", "content": text})
-    body = json.dumps({"model": LLM_MODEL, "messages": msgs,
+    body = json.dumps({"model": model, "messages": msgs,
                        "stream": True,
                        "stream_options": {"include_usage": True},
-                       "temperature": 0.7 if STATE["mode"] == "fish" else 0.4,
-                       "max_tokens": 120}).encode()
-    req = Request("https://api.deepseek.com/chat/completions", data=body,
+                       "temperature": _llm_temperature(),
+                       "max_tokens": _llm_max_tokens()}).encode()
+    req = Request(base + path, data=body,
                   headers={"Content-Type": "application/json",
                            "Authorization": "Bearer " + key})
     t0 = time.time()
@@ -1721,7 +1801,7 @@ def ask_deepseek_stream(text, on_sentence=None, history=None):
     first_dt = 0.0
     idx = 0
     try:
-        with urlopen(req, timeout=20) as r:
+        with urlopen(req, timeout=timeout) as r:
             for raw in r:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
@@ -1966,6 +2046,27 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path.startswith("/control") or self.path.startswith("/admin"):
+            # PC 浏览器访问的控制中心页面
+            try:
+                with open(os.path.join(BASE, "control_center.html"), "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self._send({"err": "no control page: %s" % e}, 404)
+            return
+        if self.path.startswith("/api/config"):
+            c = _cfgmod.load() if _cfgmod else {}
+            c["_runtime"] = {"mode": STATE["mode"], "wake": STATE["wake"],
+                             "gate": WAKE_GATE_FLOOR[0], "idle_off": IDLE_OFF,
+                             "model": LLM_MODEL, "tts_voice": dict(TTS_VOICE),
+                             "tts_tune": {k: list(v) for k, v in TTS_TUNE.items()}}
+            return self._send(c)
         if self.path.startswith("/api/tts"):
             # 本地合成，直接吐 mp3。参数和 PC 上的 tts_server 完全一致，
             # 前端只要把基址从 :8900/tts 改到 :8899/api/tts 就行。
@@ -2081,7 +2182,8 @@ class H(BaseHTTPRequestHandler):
                     EV_LOCK.wait(left)
                     ev = EVENTS[:]
                     EVENTS.clear()
-            return self._send({"events": ev, "mode": STATE["mode"]})
+            return self._send({"events": ev, "mode": STATE["mode"],
+                               "ui": CFG.get("ui", {})})
         self._send({"err": "not found"}, 404)
 
     def do_POST(self):
@@ -2089,6 +2191,59 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n).decode() or "{}") if n else {}
             p = self.path
+
+            if p.startswith("/api/config/save"):
+                # 控制中心保存：局部更新配置 + 热更新
+                if not _cfgmod:
+                    return self._send({"err": "settings module missing"}, 500)
+                _cfgmod.patch(body)
+                apply_config()
+                return self._send({"ok": True, "cfg": _cfgmod.load()})
+            if p.startswith("/api/config/reset"):
+                if not _cfgmod:
+                    return self._send({"err": "settings module missing"}, 500)
+                _cfgmod.reset()
+                apply_config()
+                return self._send({"ok": True, "cfg": _cfgmod.load()})
+            if p.startswith("/api/config/apply"):
+                # 只热更新，不改磁盘（用于外部改了 config.json 后刷新）
+                apply_config()
+                return self._send({"ok": True})
+
+            if p.startswith("/api/tts/voices"):
+                # 可选音色清单 + 当前值，供控制中心下拉框
+                voices = [
+                    ("zh-CN-XiaoxiaoNeural", "晓晓 · 女声 · 温柔"),
+                    ("zh-CN-XiaoyiNeural", "晓伊 · 女声 · 活泼"),
+                    ("zh-CN-YunxiNeural", "云希 · 男声 · 阳光"),
+                    ("zh-CN-YunjianNeural", "云健 · 男声 · 浑厚霸气"),
+                    ("zh-CN-YunyangNeural", "云扬 · 男声 · 新闻播报"),
+                    ("zh-CN-liaoning-XiaobeiNeural", "晓北 · 女声 · 东北话"),
+                    ("zh-CN-shaanxi-XiaoniNeural", "晓妮 · 女声 · 陕西话"),
+                ]
+                return self._send({"voices": [{"id": i, "name": n} for i, n in voices],
+                                   "current": dict(TTS_VOICE)})
+
+            if p.startswith("/api/llm/test"):
+                # 连通性测试：用当前配置发一句最简请求
+                key, base, path, model, timeout = _llm_conf()
+                if not key:
+                    return self._send({"ok": False, "err": "未配置密钥"})
+                try:
+                    body = json.dumps({"model": model,
+                                       "messages": [{"role": "user", "content": "回复“OK”两个字"}],
+                                       "max_tokens": 10}).encode()
+                    req = Request(base + path, data=body,
+                                  headers={"Content-Type": "application/json",
+                                           "Authorization": "Bearer " + key})
+                    t0 = time.time()
+                    with urlopen(req, timeout=min(timeout, 15)) as r:
+                        d = json.loads(r.read().decode())
+                    ans = d["choices"][0]["message"]["content"].strip()
+                    return self._send({"ok": True, "model": model, "answer": ans,
+                                       "sec": round(time.time() - t0, 2)})
+                except Exception as e:
+                    return self._send({"ok": False, "err": "%s: %s" % (type(e).__name__, e)})
 
             if p.startswith("/api/peak"):
                 # 诊断旋钮：临时调开闸门限（PC 回环测试用）。传 0 恢复默认 800。
@@ -2194,6 +2349,30 @@ class H(BaseHTTPRequestHandler):
                                        "peak": ppeak if not body.get("raw") else 0,
                                        "fish": _has_fish(txt), "sage": _has_sage(txt),
                                        "mode": STATE["mode"]})
+                except Exception as e:
+                    return self._send({"err": "%s: %s" % (type(e).__name__, e)})
+
+            if p.startswith("/api/planner/save"):
+                # 控制中心增删改：op=add|update|delete, kind=alarm|note|event
+                try:
+                    import planner as _pl
+                    kind, op = body.get("kind", ""), body.get("op", "")
+                    item_id, fields = body.get("id"), body.get("fields") or {}
+                    if op == "add":
+                        return self._send({"ok": True, "id": _pl.item_add(kind, fields)})
+                    if op == "update":
+                        return self._send({"ok": _pl.item_update(kind, item_id, fields)})
+                    if op == "delete":
+                        return self._send({"ok": _pl.item_delete(kind, item_id)})
+                    return self._send({"err": "bad op"}, 400)
+                except Exception as e:
+                    return self._send({"err": "%s: %s" % (type(e).__name__, e)})
+
+            if p.startswith("/api/planner/raw"):
+                # 控制中心拉原始明细（可编辑）
+                try:
+                    import planner as _pl
+                    return self._send(_pl._load())
                 except Exception as e:
                     return self._send({"err": "%s: %s" % (type(e).__name__, e)})
 

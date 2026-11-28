@@ -324,16 +324,16 @@
   .splash .s { font-size:19px; color:#6E93B0; font-weight:800; }
   .splash.hide { opacity:0; pointer-events:none; }
 
-  /* 关掉一切动效：4×A35 上常驻 animation 等于每帧重绘，界面光效再好看也
-     换不来一句回答的速度。布局、配色、圆角全部保留，只是不再动。 */
-  *, *::before, *::after {
+  /* 动效默认关闭：4×A35 上常驻 animation 等于每帧重绘。
+     控制中心开启时由 #ccUiStyle 覆盖（见 applyUiConfig）。 */
+  body.cc-noanim *, body.cc-noanim *::before, body.cc-noanim *::after {
     animation: none !important;
     transition: none !important;
   }
   .hero.listening img { will-change: auto; }
 </style>
 </head>
-<body>
+<body class="cc-noanim">
 <div id="stage">
 
   <div class="app">
@@ -1028,10 +1028,23 @@ function onMode(ev){
 }
 
 /* ---------- 轮询服务端事件（长轮询：没事件就挂住等，省电） ---------- */
+/* 控制中心改的界面配置：动效开关 / 字号缩放，随事件轮询下发。
+   只在值真变了才写 DOM，避免每 600ms 重排一次。 */
+var _uiCfg = null;
+function applyUiConfig(ui){
+  if (!ui) return;
+  var anim = !!ui.animation, scale = Number(ui.font_scale) || 1;
+  if (_uiCfg && _uiCfg.animation === anim && _uiCfg.font_scale === scale) return;
+  _uiCfg = {animation:anim, font_scale:scale};
+  document.body.classList.toggle('cc-noanim', !anim);
+  document.documentElement.style.fontSize = (16 * scale) + 'px';
+}
+
 function poll(){
   var t0 = Date.now(), got = 0;
   fetch(API + '/api/events?wait=20', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
     if (j.mode && j.mode !== mode) applyMode(j.mode, true);
+    applyUiConfig(j.ui);
     var evs = j.events || [];
     got = evs.length;
     for (var i = 0; i < evs.length; i++) {

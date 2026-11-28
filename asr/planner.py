@@ -285,6 +285,56 @@ def card(kind):
     return None
 
 
+# ---------- CRUD（控制中心用） ----------
+def _kind_list(kind):
+    return {"alarm": "alarms", "note": "notes", "event": "events"}.get(kind)
+
+
+def item_update(kind, item_id, fields):
+    """改一条：fields 是待合并的字段字典"""
+    key = _kind_list(kind)
+    if not key:
+        return False
+    with _lock:
+        d = _load()
+        for it in d[key]:
+            if str(it.get("id")) == str(item_id):
+                it.update(fields)
+                _save(d)
+                return True
+    return False
+
+
+def item_delete(kind, item_id):
+    key = _kind_list(kind)
+    if not key:
+        return False
+    with _lock:
+        d = _load()
+        before = len(d[key])
+        d[key] = [it for it in d[key] if str(it.get("id")) != str(item_id)]
+        if len(d[key]) != before:
+            _save(d)
+            return True
+    return False
+
+
+def item_add(kind, fields):
+    key = _kind_list(kind)
+    if not key:
+        return None
+    with _lock:
+        d = _load()
+        item = dict(fields)
+        item.setdefault("id", int(time.time() * 1000))
+        item.setdefault("created", time.strftime("%m-%d %H:%M", _now()))
+        if kind == "note":
+            item.setdefault("stamp", time.time())
+        d[key].append(item)
+        _save(d)
+    return item["id"]
+
+
 def due_alarms():
     """返回此刻到点的闹钟（每分钟由 service 轮询一次）"""
     t = _now()

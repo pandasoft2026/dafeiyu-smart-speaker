@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · 控制中心</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#F2F6FA;color:#1F3A52;font-size:14px;line-height:1.6;padding:24px}
+.wrap{max-width:1180px;margin:0 auto}
+header{background:#fff;border:1px solid #DCE7F0;border-radius:14px;padding:18px 24px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:20px;color:#0F5A94;font-weight:700}
+header .sub{color:#7A97AC;font-size:12px;margin-top:2px}
+.hd-r{display:flex;align-items:center;gap:10px}
+.badge{background:#E8F4FF;color:#0F5A94;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700}
+.badge.warn{background:#FFF2E0;color:#B56A00}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.tab{background:#fff;border:1px solid #DCE7F0;border-radius:10px;padding:9px 16px;cursor:pointer;font-size:13px;color:#54728A;user-select:none}
+.tab:hover{border-color:#8FC4EC}
+.tab.on{background:#0F5A94;color:#fff;border-color:#0F5A94}
+.panel{display:none;background:#fff;border:1px solid #DCE7F0;border-radius:14px;padding:22px 24px;margin-bottom:18px}
+.panel.on{display:block}
+.panel h2{font-size:16px;color:#0F5A94;margin-bottom:4px;font-weight:700}
+.panel .desc{color:#8AA3B6;font-size:12px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px 22px}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-weight:700;color:#35536B;font-size:13px}
+.field .hint{color:#93AABB;font-size:11px}
+input[type=text],input[type=number],input[type=password],select,textarea{
+  width:100%;padding:9px 11px;border:1px solid #CFDDE9;border-radius:8px;font:inherit;font-size:13px;color:#1F3A52;background:#FBFDFF}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#4A9BD6;background:#fff}
+textarea{resize:vertical;min-height:72px;line-height:1.5}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.row .field{flex:1;min-width:180px}
+.section-t{font-size:13px;font-weight:700;color:#0F5A94;border-left:3px solid #4A9BD6;padding-left:9px;margin:20px 0 12px}
+.section-t:first-child{margin-top:0}
+.btn{background:#0F5A94;color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700}
+.btn:hover{background:#0C4A7A}
+.btn.ghost{background:#fff;color:#0F5A94;border:1px solid #A9CBE4}
+.btn.danger{background:#fff;color:#C62828;border:1px solid #E8B4B4}
+.btn.sm{padding:5px 11px;font-size:12px}
+.actions{display:flex;gap:10px;margin-top:22px;padding-top:18px;border-top:1px solid #E8EFF5;flex-wrap:wrap}
+.switch{display:flex;align-items:center;gap:10px;padding:9px 0}
+.switch input{width:40px;height:22px;appearance:none;background:#C7D6E2;border-radius:20px;position:relative;cursor:pointer;transition:.2s}
+.switch input:checked{background:#0F5A94}
+.switch input::after{content:'';position:absolute;width:16px;height:16px;background:#fff;border-radius:50%;top:3px;left:3px;transition:.2s}
+.switch input:checked::after{left:21px}
+.msg{display:none;padding:10px 14px;border-radius:8px;margin-top:14px;font-size:13px;font-weight:700}
+.msg.ok{display:block;background:#E6F6EE;color:#1B7A4B}
+.msg.err{display:block;background:#FDECEC;color:#B32727}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #E8EFF5}
+th{color:#7A97AC;font-size:12px;background:#F7FAFD}
+td .op{white-space:nowrap}
+.mini{color:#93AABB;font-size:11px}
+pre{background:#F7FAFD;border:1px solid #E3ECF4;border-radius:8px;padding:12px;font-size:12px;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.kv{display:inline-block;background:#EEF5FB;color:#0F5A94;padding:3px 9px;border-radius:6px;font-size:12px;margin:2px 4px 2px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div><h1>大肥鱼 · 控制中心</h1><div class="sub">所有改动即时生效，无需重启 · 127.0.0.1:8899</div></div>
+  <div class="hd-r"><span class="badge" id="bdMode">模式</span><span class="badge" id="bdBuild">—</span><button class="btn ghost sm" onclick="loadAll()">刷新</button></div>
+</header>
+
+<div class="tabs" id="tabs">
+  <div class="tab on" data-p="llm">大模型 API</div>
+  <div class="tab" data-p="asr">语音识别 ASR</div>
+  <div class="tab" data-p="tts">语音播报 TTS</div>
+  <div class="tab" data-p="ui">界面与交互</div>
+  <div class="tab" data-p="prompts">人设提示词</div>
+  <div class="tab" data-p="planner">事项管理</div>
+  <div class="tab" data-p="system">系统</div>
+</div>
+
+<div class="panel on" id="p-llm">
+  <h2>大模型 API</h2><div class="desc">支持 DeepSeek 及任何 OpenAI 兼容接口。改完点保存，再点“测试连通性”验证。</div>
+  <div class="section-t">接口配置</div>
+  <div class="grid">
+    <div class="field"><label>服务商类型</label><select id="llm.provider"><option value="deepseek">DeepSeek</option><option value="openai_compatible">OpenAI 兼容接口</option></select><div class="hint">兼容接口填自己的 base_url</div></div>
+    <div class="field"><label>API Key</label><input type="password" id="llm.api_key" placeholder="留空则沿用设备上的 api_key.conf"><div class="hint">保存到 config.json；留空不覆盖原文件</div></div>
+    <div class="field"><label>Base URL</label><input type="text" id="llm.base_url" placeholder="https://api.deepseek.com"></div>
+    <div class="field"><label>Chat 路径</label><input type="text" id="llm.chat_path" placeholder="/chat/completions"></div>
+    <div class="field"><label>模型名</label><input type="text" id="llm.model" placeholder="deepseek-chat"></div>
+    <div class="field"><label>超时（秒）</label><input type="number" id="llm.timeout" min="5" max="120"></div>
+  </div>
+  <div class="section-t">生成参数</div>
+  <div class="grid">
+    <div class="field"><label>Temperature · 大肥鱼</label><input type="number" step="0.1" id="llm.temperature_fish" min="0" max="2"><div class="hint">越高越活泼，建议 0.7</div></div>
+    <div class="field"><label>Temperature · 梁圣</label><input type="number" step="0.1" id="llm.temperature_sage" min="0" max="2"><div class="hint">越低越冷静，建议 0.4</div></div>
+    <div class="field"><label>Max tokens</label><input type="number" id="llm.max_tokens" min="20" max="2000"></div>
+  </div>
+  <div class="actions"><button class="btn" onclick="saveCfg()">保存大模型配置</button><button class="btn ghost" onclick="testLLM()">测试连通性</button><span class="msg" id="m-llm"></span></div>
+  <div id="llm-test-out" style="margin-top:12px"></div>
+</div>
+
+<div class="panel" id="p-asr">
+  <h2>语音识别 ASR</h2><div class="desc">当前引擎 Vosk 本地离线。可切换模型目录、调唤醒门限与判停时长。</div>
+  <div class="grid">
+    <div class="field"><label>识别引擎</label><select id="asr.engine"><option value="vosk">Vosk（本地离线）</option><option value="cloud">云端 ASR（预留）</option></select><div class="hint">云端方案需另行接入密钥</div></div>
+    <div class="field"><label>主模型目录</label><input type="text" id="asr.model_dir"></div>
+    <div class="field"><label>唤醒词表模型目录</label><input type="text" id="asr.wake_model_dir"></div>
+    <div class="field"><label>唤醒门限</label><input type="number" id="asr.gate_floor" min="100" max="5000" step="50"><div class="hint">默认 800；真人对喊峰值 2000+。调低更易触发但会误唤醒</div></div>
+    <div class="field"><label>判停静音时长（秒）</label><input type="number" step="0.05" id="asr.silence_sec" min="0.2" max="2"></div>
+    <div class="field"><label>开闸超时（秒）</label><input type="number" step="0.5" id="asr.wake_timeout_sec" min="2" max="15"><div class="hint">防误唤醒：开闸超过此时长强制关闭</div></div>
+  </div>
+  <div class="section-t">唤醒开关</div>
+  <div class="switch"><input type="checkbox" id="scene.wake_enabled"><span>启用语音唤醒（关闭后只能点麦克风按钮）</span></div>
+  <div class="actions"><button class="btn" onclick="saveCfg()">保存 ASR 配置</button><span class="msg" id="m-asr"></span></div>
+</div>
+
+<div class="panel" id="p-tts">
+  <h2>语音播报 TTS</h2><div class="desc">音箱直连微软朗读服务合成，不依赖电脑。可选音色、音调、语速。</div>
+  <div class="grid" style="margin-bottom:6px">
+    <div class="field"><label>播报引擎</label><select id="tts.engine"><option value="edge">Edge 微软朗读（当前）</option><option value="cloud">云端 TTS（预留）</option></select><div class="hint">云端方案需另行接入密钥</div></div>
+  </div>
+  <div class="section-t">大肥鱼音色</div>
+  <div class="grid">
+    <div class="field"><label>音色</label><select id="tts.voice_fish"></select></div>
+    <div class="field"><label>音调（Hz 偏移）</label><input type="number" id="tts.pitch_fish" min="-60" max="60"><div class="hint">正数更尖，负数更低沉</div></div>
+    <div class="field"><label>语速（% 偏移）</label><input type="number" id="tts.rate_fish" min="-50" max="50"><div class="hint">负数更慢，正数更快</div></div>
+  </div>
+  <div class="section-t">梁圣音色</div>
+  <div class="grid">
+    <div class="field"><label>音色</label><select id="tts.voice_sage"></select></div>
+    <div class="field"><label>音调（Hz 偏移）</label><input type="number" id="tts.pitch_sage" min="-60" max="60"></div>
+    <div class="field"><label>语速（% 偏移）</label><input type="number" id="tts.rate_sage" min="-50" max="50"></div>
+  </div>
+  <div class="section-t">缓存</div>
+  <div class="grid">
+    <div class="field"><label>最多缓存条数</label><input type="number" id="tts.cache_max" min="10" max="500"></div>
+    <div class="field"><label>单次合成字数上限</label><input type="number" id="tts.text_max" min="50" max="2000"></div>
+  </div>
+  <div class="actions"><button class="btn" onclick="saveCfg()">保存 TTS 配置</button><button class="btn ghost" onclick="testTTS('fish')">试听大肥鱼</button><button class="btn ghost" onclick="testTTS('sage')">试听梁圣</button><span class="msg" id="m-tts"></span></div>
+  <div id="tts-audio" style="margin-top:12px"></div>
+</div>
+
+<div class="panel" id="p-ui">
+  <h2>界面与交互</h2><div class="desc">动效在这台设备上默认关闭（常驻动画拖慢老 WebView）。息屏时间与音量可调。</div>
+  <div class="section-t">显示</div>
+  <div class="switch"><input type="checkbox" id="ui.animation"><span>开启界面动效（呼吸灯、打字机、波浪）</span></div>
+  <div class="grid" style="margin-top:10px">
+    <div class="field"><label>息屏时间（秒）</label><input type="number" id="ui.idle_off_sec" min="30" max="7200"><div class="hint">默认 600（10分钟）；0 或空不熄屏</div></div>
+    <div class="field"><label>亮度微调</label><input type="number" step="0.1" id="ui.brightness_adj" min="-1" max="1"><div class="hint">-0.5 为当前值，越负越暗</div></div>
+    <div class="field"><label>字号缩放</label><input type="number" step="0.05" id="ui.font_scale" min="0.7" max="1.5"></div>
+  </div>
+  <div class="section-t">场景</div>
+  <div class="grid">
+    <div class="field"><label>天气城市</label><input type="text" id="scene.weather_city" placeholder="留空自动定位"><div class="hint">如“成都”“绵阳”</div></div>
+    <div class="field"><label>媒体音量（0-15）</label><input type="number" id="scene.volume_music" min="0" max="15"></div>
+  </div>
+  <div class="actions"><button class="btn" onclick="saveCfg()">保存界面配置</button><span class="msg" id="m-ui"></span></div>
+</div>
+
+<div class="panel" id="p-prompts">
+  <h2>人设提示词</h2><div class="desc">决定两种人格的说话风格。改动会立即影响下一次对话。留空将恢复默认。</div>
+  <div class="field" style="margin-bottom:16px"><label>大肥鱼 · 系统提示词</label><textarea id="prompts.fish" rows="5"></textarea></div>
+  <div class="field" style="margin-bottom:16px"><label>梁圣 · 系统提示词</label><textarea id="prompts.sage" rows="5"></textarea></div>
+  <div class="actions"><button class="btn" onclick="saveCfg()">保存提示词</button><span class="msg" id="m-prompts"></span></div>
+</div>
+
+<div class="panel" id="p-planner">
+  <h2>事项管理</h2><div class="desc">对话里说“记住/安排/定个闹钟”添加的事项，都可以在这里增删改。</div>
+  <div class="section-t">新增事项</div>
+  <div class="row">
+    <div class="field"><label>类型</label><select id="np-kind"><option value="alarm">闹钟</option><option value="note">备忘录</option><option value="event">日程</option></select></div>
+    <div class="field"><label>内容</label><input type="text" id="np-text" placeholder="如：明天上午十点去华西复查"></div>
+    <button class="btn" onclick="plannerAdd()">添加</button>
+  </div>
+  <div class="section-t">现有事项</div>
+  <table><thead><tr><th style="width:70px">类型</th><th style="width:130px">时间</th><th>内容</th><th style="width:100px">操作</th></tr></thead><tbody id="pl-list"></tbody></table>
+  <div class="actions"><button class="btn ghost" onclick="loadPlanner()">刷新事项</button><span class="msg" id="m-planner"></span></div>
+</div>
+
+<div class="panel" id="p-system">
+  <h2>系统</h2><div class="desc">查看当前运行态、配置原文，或恢复出厂设置。</div>
+  <div class="section-t">运行态</div>
+  <div id="sys-runtime"></div>
+  <div class="section-t">配置原文（config.json）</div>
+  <pre id="sys-raw">加载中…</pre>
+  <div class="actions">
+    <button class="btn ghost" onclick="loadAll()">重新读取</button>
+    <button class="btn danger" onclick="resetCfg()">恢复默认配置</button>
+    <span class="msg" id="m-system"></span>
+  </div>
+</div>
+
+</div>
+<script>
+var API='http://'+location.host;
+var CFG=null, VOICES=[];
+function $(id){return document.getElementById(id)}
+function msg(id,ok,text){var e=$(id);e.className='msg '+(ok?'ok':'err');e.textContent=text;clearTimeout(e._t);e._t=setTimeout(function(){e.className='msg'},5000)}
+function api(path,body){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json()})}
+
+function setVal(id,v){var e=$(id);if(!e)return;if(e.type==='checkbox')e.checked=!!v;else e.value=(v==null?'':v)}
+function fillCfg(c){
+  CFG=c;
+  Object.keys(c).forEach(function(sec){
+    if(typeof c[sec]!=='object'||sec==='_runtime')return;
+    Object.keys(c[sec]).forEach(function(k){setVal(sec+'.'+k,c[sec][k])});
+  });
+  var r=c._runtime||{};
+  $('bdMode').textContent='当前：'+(r.mode==='sage'?'梁圣':'大肥鱼');
+  $('bdBuild').textContent='门限 '+r.gate+' · 音量 '+(CFG.scene&&CFG.scene.volume_music);
+  $('sys-runtime').innerHTML='<span class="kv">模式 '+(r.mode||'')+'</span><span class="kv">唤醒 '+(r.wake?'开':'关')+'</span><span class="kv">门限 '+r.gate+'</span><span class="kv">模型 '+r.model+'</span><span class="kv">息屏 '+r.idle_off+'s</span>'+
+    '<span class="kv">音色·鱼 '+(r.tts_voice&&r.tts_voice.fish)+'</span><span class="kv">音色·圣 '+(r.tts_voice&&r.tts_voice.sage)+'</span>';
+  $('sys-raw').textContent=JSON.stringify(c,null,1);
+}
+function loadCfg(){
+  return fetch(API+'/api/config').then(function(r){return r.json()}).then(fillCfg);
+}
+function loadVoices(){
+  return api('/api/tts/voices',{}).then(function(d){
+    VOICES=d.voices||[];
+    ['tts.voice_fish','tts.voice_sage'].forEach(function(id){
+      var e=$(id);e.innerHTML='';
+      VOICES.forEach(function(v){var o=document.createElement('option');o.value=v.id;o.textContent=v.name;e.appendChild(o)});
+    });
+    if(CFG){
+      $('tts.voice_fish').value=(CFG.tts||{}).voice_fish||'';
+      $('tts.voice_sage').value=(CFG.tts||{}).voice_sage||'';
+    }
+  });
+}
+function collectCfg(){
+  var out={};
+  ['llm','asr','tts','ui','prompts','scene'].forEach(function(sec){
+    out[sec]={};
+    Object.keys((CFG&&CFG[sec])||{}).forEach(function(k){
+      var e=$(sec+'.'+k);if(!e)return;
+      if(e.type==='checkbox')out[sec][k]=e.checked;
+      else if(e.type==='number')out[sec][k]=e.value===''?0:Number(e.value);
+      else out[sec][k]=e.value;
+    });
+  });
+  return out;
+}
+function saveCfg(){
+  var body=collectCfg();
+  api('/api/config/save',body).then(function(d){
+    if(d.ok){loadCfg();msg('m-llm',true,'已保存并即时生效');msg('m-asr',true,'已保存并即时生效');msg('m-tts',true,'已保存并即时生效');msg('m-ui',true,'已保存并即时生效');msg('m-prompts',true,'已保存并即时生效')}
+    else msg('m-llm',false,'保存失败：'+(d.err||''));
+  }).catch(function(e){msg('m-llm',false,'请求失败 '+e.message)});
+}
+function resetCfg(){
+  if(!confirm('确定恢复所有配置为默认值？API Key 不受影响。'))return;
+  api('/api/config/reset',{}).then(function(d){if(d.ok){loadCfg();loadVoices();msg('m-system',true,'已恢复默认')}});
+}
+function testLLM(){
+  msg('m-llm',true,'测试中…');
+  api('/api/llm/test',{}).then(function(d){
+    $('llm-test-out').innerHTML=d.ok?'<span class="kv">连接成功 · '+d.model+' · '+d.sec+'s</span><div style="margin-top:8px">回复：'+esc(d.answer)+'</div>':'<span style="color:#B32727">失败：'+esc(d.err)+'</span>';
+    msg('m-llm',d.ok,d.ok?'连通性正常':'连接失败');
+  });
+}
+function testTTS(who){
+  var c=(CFG&&CFG.tts)||{};
+  var voice=who==='fish'?c.voice_fish:c.voice_sage;
+  var pitch=who==='fish'?c.pitch_fish:c.pitch_sage;
+  var rate=who==='fish'?c.rate_fish:c.rate_sage;
+  var text=who==='fish'?'你好呀，我是大肥鱼～':'本座在此。';
+  var u=API+'/api/tts?text='+encodeURIComponent(text)+'&voice='+encodeURIComponent(voice)+'&pitch='+pitch+'&rate='+rate;
+  $('tts-audio').innerHTML='<audio controls autoplay src="'+u+'"></audio>';
+  msg('m-tts',true,'已生成试听，注意音箱会外放');
+}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function loadPlanner(){
+  return api('/api/planner/raw',{}).then(function(d){
+    var kinds=[['alarm','闹钟'],['note','备忘'],['event','日程']];
+    var h='';
+    kinds.forEach(function(pair){
+      var list=d[pair[0]]||[];
+      list.forEach(function(it){
+        var pad=function(n){return String(n).padStart(2,'0')};
+        var when=it.h!=null?(pad(it.h)+':'+pad(it.m||0)):(it.ts||'第'+((it.day||0)+1)+'天');
+        h+='<tr><td>'+pair[1]+'</td><td class="mini">'+esc(when)+'</td><td>'+esc(it.text)+'</td><td class="op">'+
+           '<button class="btn sm ghost" onclick="plannerEdit(\''+pair[0]+'\',\''+it.id+'\')">改</button> '+
+           '<button class="btn sm danger" onclick="plannerDel(\''+pair[0]+'\',\''+it.id+'\')">删</button></td></tr>';
+      });
+    });
+    $('pl-list').innerHTML=h||'<tr><td colspan="4" class="mini">暂无事项，可在上方添加或用对话添加</td></tr>';
+  });
+}
+function plannerAdd(){
+  var kind=$('np-kind').value, text=$('np-text').value.trim();
+  if(!text){msg('m-planner',false,'请输入内容');return}
+  api('/api/planner/save',{op:'add',kind:kind,fields:{text:text}}).then(function(d){
+    if(d.ok){$('np-text').value='';loadPlanner();msg('m-planner',true,'已添加')}else msg('m-planner',false,'添加失败');
+  });
+}
+function plannerDel(kind,id){
+  if(!confirm('删除这条事项？'))return;
+  api('/api/planner/save',{op:'delete',kind:kind,id:id}).then(function(d){loadPlanner();msg('m-planner',d.ok,d.ok?'已删除':'删除失败')});
+}
+function plannerEdit(kind,id){
+  var newText=prompt('修改内容为：');
+  if(newText==null||!newText.trim())return;
+  api('/api/planner/save',{op:'update',kind:kind,id:id,fields:{text:newText.trim()}}).then(function(d){loadPlanner();msg('m-planner',d.ok,d.ok?'已修改':'修改失败')});
+}
+function loadAll(){return loadCfg().then(loadVoices).then(loadPlanner)}
+document.getElementById('tabs').addEventListener('click',function(e){
+  var t=e.target.closest('.tab');if(!t)return;
+  document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
+  document.querySelectorAll('.panel').forEach(function(x){x.classList.remove('on')});
+  t.classList.add('on');$('p-'+t.dataset.p).classList.add('on');
+});
+loadAll().catch(function(e){msg('m-llm',false,'加载失败 '+e.message)});
+</script>
+</body>
+</html>
