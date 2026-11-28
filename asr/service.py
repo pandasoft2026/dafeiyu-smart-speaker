@@ -29,6 +29,12 @@ except Exception:
     _cfgmod = None
     CFG = {}
 
+
+def _cfg(section, key, default):
+    """从集中配置读一个值；配置缺失就用 default。"""
+    return CFG.get(section, {}).get(key, default)
+
+
 # 录音落盘一律走 /dev（tmpfs，内存里）。tinycap 是 128KB/s 连续写入，
 # 放在 /data 上是 11GB/天的 flash 写放大，一年就能把 eMMC 磨穿。
 # /dev 是 tmpfs，写它等于写内存，零磨损，而且读写都更快。
@@ -114,10 +120,6 @@ def push_event(ev):
 # 实测 60 条才 2MB，写放大可忽略（真正的大头是录音，仍留在 /dev）。
 # ---------------------------------------------------------------------------
 TTS_DIR = os.path.join(BASE, "tts_cache")
-
-
-def _cfg(section, key, default):
-    return CFG.get(section, {}).get(key, default)
 
 
 # 音色/音调/语速可在控制中心改；默认保持已验证的搭配。
